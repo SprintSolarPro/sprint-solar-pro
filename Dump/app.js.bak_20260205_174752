@@ -1,0 +1,1350 @@
+/* Sprint Solar Pro - cleaned & consolidated app.js
+   Fixed: removed embedded raw metadata, consolidated duplicates,
+   robust sizing and quote logic, defensive DOM guards.
+   Part 1/10
+*/
+
+/* app.js — debug marker: confirms the file executed */
+console.log('app.js loaded:', new Date().toISOString());
+
+/* Safe reader for edge tabs metadata (reads JSON from index.html) */
+,
+      new Promise(resolve => setTimeout(resolve, timeoutMs))
+    ]);
+  } catch (e) { console.error('waitForImages failed', e); }
+}
+
+/* _exportQuotePDF_impl - core export logic (requires explicit allow flag) */
+async function _exportQuotePDF_impl() {
+  let clone = null;
+  let hidden = [];
+  try {
+    if (!window.__allowExport && !(window.__dev_override_enabled && typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn())) {
+      console.warn('_exportQuotePDF_impl blocked: __allowExport not set');
+      alert('Export blocked: user action required.');
+      return;
+    }
+    const srcEl = (typeof findBestQuoteElement === 'function') ? findBestQuoteElement() : document.getElementById('quoteWrapper');
+    if (!srcEl) { console.error('quote element not found'); alert('Nothing to export'); return; }
+
+    clone = srcEl.cloneNode(true);
+    clone.id = 'quoteWrapper_clone_for_pdf';
+    clone.style.position = 'absolute';
+    clone.style.left = '-9999px';
+    clone.style.top = '0';
+    clone.style.opacity = '1';
+    clone.style.display = 'block';
+    clone.style.visibility = 'visible';
+    clone.style.background = '#ffffff';
+    document.body.appendChild(clone);
+
+    // Remove trial banner text if present
+    clone.querySelectorAll('*').forEach(el => {
+      try { if (el.textContent && el.textContent.includes('TRIAL VERSION UPGRADE TO EXPORT')) el.remove(); } catch (e) {}
+    });
+
+    // Sanitize clone
+    clone.querySelectorAll('img').forEach(img => { try { img.crossOrigin = "anonymous"; } catch (e) {} });
+    sanitizeForHtml2Canvas();
+
+    await waitForImages(clone, 8000);
+
+    hidden = _hideUiForExport();
+
+    // Use html2pdf if available
+    if (typeof html2pdf === 'function' || (window.html2pdf && typeof window.html2pdf === 'function')) {
+      try {
+        const opt = {
+          margin:       10,
+          filename:     (document.getElementById('quoteIdDisplay')?.innerText || (typeof getNextQuoteId === 'function' ? getNextQuoteId() : 'quote')) + '.pdf',
+          image:        { type: 'jpeg', quality: 0.95 },
+          html2canvas:  { scale: 2, useCORS: true, allowTaint: false },
+          jsPDF:        { unit: 'pt', format: 'a4', orientation: 'portrait' }
+        };
+        await html2pdf().set(opt).from(clone).save();
+      } catch (err) {
+        console.error('html2pdf export failed', err);
+        alert('Export failed: ' + (err && err.message ? err.message : 'unknown error'));
+      }
+    } else {
+      // Fallback: open print dialog for the clone
+      const w = window.open('', '_blank');
+      if (w) {
+        w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Quotation</title></head><body>' + clone.outerHTML + '</body></html>');
+        w.document.close();
+        try { w.focus(); w.print(); w.close(); } catch (e) { console.warn('print fallback failed', e); }
+      } else {
+        alert('Unable to open print window for export.');
+      }
+    }
+  } catch (e) {
+    console.error('Export generation failed', e);
+    alert('Export failed. See console for details.');
+  } finally {
+    try { _restoreUiAfterExport(hidden); } catch (e) {}
+    try { restoreAfterHtml2Canvas(); } catch (e) {}
+    try { if (clone) clone.remove(); } catch (e) {}
+    try { delete window.__allowExport; } catch (e) { window.__allowExport = false; }
+  }
+}
+
+/* Public export wrapper (idempotent) */
+function exportQuotePDF() {
+  try { window.__allowExport = true; } catch (e) {}
+  try {
+    if (typeof _exportQuotePDF_impl === 'function') {
+      _exportQuotePDF_impl().catch(err => console.error('exportQuotePDF error', err));
+    } else {
+      console.warn('exportQuotePDF: _exportQuotePDF_impl not defined');
+    }
+  } finally {
+    setTimeout(() => { try { window.__allowExport = false; } catch (e) {} }, 50);
+  }
+}
+window.exportQuotePDF = exportQuotePDF;
+
+/* Defensive guard: ensure populateQuoteFromSizing exists (no-op fallback) */
+if (typeof window.populateQuoteFromSizing !== 'function') {
+  window.populateQuoteFromSizing = function() {
+    console.warn('populateQuoteFromSizing: fallback no-op called (function not yet defined).');
+    return false;
+  };
+}
+
+/* Defensive populateQuoteFromSizing implementation */
+function populateQuoteFromSizing_impl() {
+  try {
+    // Basic guards
+    const quoteTableBody = document.getElementById('quoteTableBody');
+    const quoteDateEl = document.getElementById('quoteDate');
+    const quoteIdEl = document.getElementById('quoteIdDisplay');
+    const brandNameEl = document.getElementById('brandName');
+    const companyLogoEl = document.getElementById('companyLogo');
+    const currencyMirror = document.getElementById('quoteCurrencyMirror');
+    const currencyInput = document.getElementById('currencySelector');
+
+    // Ensure quote table exists
+    if (!quoteTableBody) return false;
+
+    // Clear existing non-total rows (keep quoteTotalRow)
+    Array.from(quoteTableBody.querySelectorAll('tr')).forEach(tr => {
+      if (tr.id === 'quoteTotalRow') return;
+      try { tr.remove(); } catch (e) {}
+    });
+
+    // Set date and id if available
+    try { if (quoteDateEl) quoteDateEl.innerText = (new Date()).toLocaleDateString(); } catch (e) {}
+    try {
+      if (quoteIdEl) {
+        const existing = quoteIdEl.innerText && quoteIdEl.innerText.trim();
+        quoteIdEl.innerText = existing || (typeof getNextQuoteId === 'function' ? getNextQuoteId() : ('Q-' + Date.now().toString().slice(-6)));
+      }
+    } catch (e) {}
+
+    // Copy branding info if present
+    try {
+      const companyName = (document.getElementById('companyName')?.value || document.getElementById('brandName')?.innerText || '').trim();
+      if (brandNameEl && companyName) brandNameEl.innerText = companyName;
+      const logoUrl = (document.getElementById('companyLogoUrl')?.value || companyLogoEl?.getAttribute('src') || '').trim();
+      if (companyLogoEl && logoUrl) {
+        try { companyLogoEl.src = logoUrl; } catch (e) {}
+      }
+    } catch (e) {}
+
+    // Mirror currency selector
+    try { if (currencyMirror && currencyInput) { if ('value' in currencyMirror) currencyMirror.value = currencyInput.value || ''; else currencyMirror.innerText = currencyInput.value || ''; } } catch (e) {}
+
+    // Read sizing results (use window.systemQuantities as authoritative fallback)
+    const inverterQty = Number(document.getElementById('inverterQtyResult')?.innerText || window.systemQuantities?.inverterQty || 0);
+    const batteryQty = Number(document.getElementById('batteryQty')?.innerText || window.systemQuantities?.batteryQty || 0);
+    const panelQty = Number(document.getElementById('panelQty')?.innerText || window.systemQuantities?.panelQty || 0);
+
+    // Helper to add a quote row safely
+    const safeAdd = (name, qty, price) => {
+      try {
+        if (typeof addQuoteRow === 'function') {
+          addQuoteRow({ name, qty, price });
+        } else {
+          // fallback: create minimal row
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${name}</td><td>${qty}</td><td>${(price || 0).toFixed ? (price || 0).toFixed(2) : String(price || 0)}</td><td class="quoteRowTotal">${((qty || 0) * (price || 0)).toFixed(2)}</td><td class="action-cell" data-html2canvas-ignore="true"></td>`;
+          const totalRow = document.getElementById('quoteTotalRow');
+          if (totalRow) quoteTableBody.insertBefore(tr, totalRow); else quoteTableBody.appendChild(tr);
+        }
+      } catch (e) { console.error('safeAdd failed', e); }
+    };
+
+    // Populate rows from sizing
+    try {
+      if (inverterQty > 0) safeAdd(`5kVA Hybrid Inverter`, inverterQty, 0);
+      if (batteryQty > 0) safeAdd(`200Ah Battery`, batteryQty, 0);
+      if (panelQty > 0) safeAdd(`550W Mono Solar Panel`, panelQty, 0);
+      // Add common rows
+      safeAdd('Balance of system (cables, mounting, controller)', 1, 0);
+      safeAdd('Installation & commissioning', 1, 0);
+    } catch (e) { console.error('populate rows failed', e); }
+
+    // Recalculate totals and update displays
+    try {
+      if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+      else if (typeof recalcQuoteTotals === 'function') recalcQuoteTotals();
+    } catch (e) { console.error('recalc quote totals failed', e); }
+
+    try {
+      if (typeof updateQuoteTotalDisplay === 'function') updateQuoteTotalDisplay();
+    } catch (e) { console.error('updateQuoteTotalDisplay failed', e); }
+
+    return true;
+  } catch (e) {
+    console.error('populateQuoteFromSizing_impl failed', e);
+    return false;
+  }
+}
+
+/* Expose the implementation as the public function (safe override) */
+try {
+  window.populateQuoteFromSizing = function() {
+    return populateQuoteFromSizing_impl();
+  };
+} catch (e) {
+  console.warn('Failed to assign populateQuoteFromSizing to window', e);
+}
+/* Part 8 — cleaned: populateQuoteFromSizing continuation, bindings, print/share, and protections */
+
+/* Helper used by populateQuoteFromSizing_impl to add rows safely (standalone) */
+function addQuoteRowFromSizing(name, qty, unitPrice) {
+  try {
+    const tbody = document.getElementById('quoteTableBody');
+    if (!tbody) {
+      console.error('addQuoteRowFromSizing failed: quoteTableBody not found');
+      return;
+    }
+    const totalRow = document.getElementById('quoteTotalRow');
+    const tr = document.createElement('tr');
+    tr.setAttribute('data-quote-index', Date.now() + Math.floor(Math.random() * 1000));
+    tr.innerHTML = `
+      <td><input type="text" class="quote-item-name" name="quote_item_name[]" value="${String(name || '')}" /></td>
+      <td>
+        <label class="visually-hidden">Quantity</label>
+        <input type="number" class="quote-item-qty quoteQty" name="quote_item_qty[]" value="${Number(qty || 1)}" min="0" />
+      </td>
+      <td>
+        <label class="visually-hidden">Unit price</label>
+        <input type="number" class="quote-item-price quotePrice" name="quote_item_price[]" value="${Number(unitPrice || 0)}" min="0" />
+      </td>
+      <td class="quote-item-total quoteRowTotal">${(Number(qty || 1) * Number(unitPrice || 0)).toFixed(2)}</td>
+      <td class="action-cell" data-html2canvas-ignore="true"><button type="button" class="removeRowBtn">Remove</button></td>
+    `;
+    if (totalRow) tbody.insertBefore(tr, totalRow);
+    else tbody.appendChild(tr);
+
+    // wire remove and input handlers defensively
+    tr.querySelector('.removeRowBtn')?.addEventListener('click', () => {
+      try { tr.remove(); } catch (e) {}
+      try { if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals(); } catch (e) {}
+    });
+    const qtyEl = tr.querySelector('.quoteQty');
+    const priceEl = tr.querySelector('.quotePrice');
+    const onChange = () => {
+      try {
+        const q = Math.max(0, Number(qtyEl?.value) || 0);
+        const p = Math.max(0, Number(priceEl?.value) || 0);
+        const totalEl = tr.querySelector('.quoteRowTotal');
+        if (totalEl) totalEl.textContent = (q * p).toFixed(2);
+        if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+      } catch (e) { console.error('addQuoteRowFromSizing onChange failed', e); }
+    };
+    if (qtyEl) qtyEl.addEventListener('input', onChange);
+    if (priceEl) priceEl.addEventListener('input', onChange);
+  } catch (e) {
+    console.error('addQuoteRowFromSizing failed', e);
+  }
+}
+
+/* Continue populateQuoteFromSizing_impl: header, branding, mirror, sizing -> quote rows */
+(function populateQuoteFromSizing_continued() {
+  // This block assumes populateQuoteFromSizing_impl has already cleared the table and set local references.
+  // We'll implement the remainder as a function that can be called by populateQuoteFromSizing_impl or directly.
+  function _populateQuoteFromSizing_finish() {
+    try {
+      const quoteTableBody = document.getElementById('quoteTableBody');
+      if (!quoteTableBody) return false;
+
+      const quoteDateEl = document.getElementById('quoteDate');
+      const quoteIdEl = document.getElementById('quoteIdDisplay');
+      const brandNameEl = document.getElementById('brandName');
+      const companyLogoEl = document.getElementById('companyLogo');
+      const currencyMirror = document.getElementById('quoteCurrencyMirror');
+      const currencyInput = document.getElementById('currencySelector');
+
+      // Populate header info: date and id
+      try {
+        if (quoteDateEl) quoteDateEl.innerText = (new Date()).toLocaleDateString();
+        if (quoteIdEl) {
+          const existing = quoteIdEl.innerText && quoteIdEl.innerText.trim();
+          quoteIdEl.innerText = existing || ('Q-' + Date.now().toString().slice(-6));
+        }
+      } catch (e) { console.warn('populateQuoteFromSizing: header update failed', e); }
+
+      // Populate brand/logo from system fields if present
+      try {
+        const companyName = (document.getElementById('companyName')?.value || document.getElementById('brandName')?.innerText || '').trim();
+        if (brandNameEl && companyName) brandNameEl.innerText = companyName;
+        const logoUrl = (document.getElementById('companyLogoUrl')?.value || companyLogoEl?.getAttribute('src') || '').trim();
+        if (companyLogoEl && logoUrl) {
+          try { companyLogoEl.src = logoUrl; } catch (e) { /* ignore */ }
+        }
+      } catch (e) { console.warn('populateQuoteFromSizing: branding update failed', e); }
+
+      // Mirror currency
+      try {
+        if (currencyMirror && currencyInput) {
+          if ('value' in currencyMirror) currencyMirror.value = currencyInput.value || '';
+          else currencyMirror.innerText = currencyInput.value || '';
+        }
+      } catch (e) { /* ignore */ }
+
+      // Pull sizing results from DOM (defensive fallbacks)
+      const dailyEnergy = Number(document.getElementById('dailyEnergyDisplay')?.innerText || window.totalEnergyValue || 0);
+      const peakLoad = Number(document.getElementById('peakLoadDisplay')?.innerText || window.peakLoadValue || 0);
+      const inverterQty = Number(document.getElementById('inverterQtyResult')?.innerText || window.systemQuantities?.inverterQty || 0);
+      const batteryQty = Number(document.getElementById('batteryQty')?.innerText || window.systemQuantities?.batteryQty || 0);
+      const panelQty = Number(document.getElementById('panelQty')?.innerText || window.systemQuantities?.panelQty || 0);
+
+      // Create a few sensible default quote lines based on sizing
+      addQuoteRowFromSizing('Inverter (qty: ' + inverterQty + ')', inverterQty || 1, 0);
+      addQuoteRowFromSizing('Battery bank (qty: ' + batteryQty + ')', batteryQty || 1, 0);
+      addQuoteRowFromSizing('Solar panels (qty: ' + panelQty + ')', panelQty || 1, 0);
+      addQuoteRowFromSizing('Balance of system (cables, mounting, controller)', 1, 0);
+      addQuoteRowFromSizing('Installation & commissioning', 1, 0);
+
+      // Recalculate totals safely
+      try {
+        if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+        else if (typeof recalcQuoteTotals === 'function') recalcQuoteTotals();
+      } catch (e) { console.error('calculateQuoteTotals failed after populateQuoteFromSizing', e); }
+
+      // Ensure quote total display is updated
+      try { if (typeof updateQuoteTotalDisplay === 'function') updateQuoteTotalDisplay(); } catch (e) { console.error('updateQuoteTotalDisplay failed after populateQuoteFromSizing', e); }
+
+      return true;
+    } catch (e) {
+      console.error('populateQuoteFromSizing finish failed', e);
+      return false;
+    }
+  }
+
+  // Expose helper so populateQuoteFromSizing_impl can call it
+  window._populateQuoteFromSizing_finish = _populateQuoteFromSizing_finish;
+})();
+
+/* Expose the real implementation (if populateQuoteFromSizing_impl exists it should call the finish helper) */
+try {
+  if (typeof populateQuoteFromSizing_impl === 'function') {
+    // ensure the impl calls the finish helper at the end; if not, call it now as a safety net
+    const original = populateQuoteFromSizing_impl;
+    window.populateQuoteFromSizing = function() {
+      try {
+        const res = original();
+        try { window._populateQuoteFromSizing_finish(); } catch (e) {}
+        return res;
+      } catch (e) {
+        console.error('populateQuoteFromSizing wrapper failed', e);
+        try { return window._populateQuoteFromSizing_finish(); } catch (err) { return false; }
+      }
+    };
+  } else {
+    // fallback: expose the finish function as the public API
+    window.populateQuoteFromSizing = function() {
+      return window._populateQuoteFromSizing_finish ? window._populateQuoteFromSizing_finish() : (console.warn('populateQuoteFromSizing not implemented'), false);
+    };
+  }
+} catch (e) {
+  console.warn('Failed to assign populateQuoteFromSizing to window', e);
+}
+
+/* Bind export UI elements idempotently on DOMContentLoaded and ensure logo fallback */
+document.addEventListener('DOMContentLoaded', () => {
+  function bindOnce(el, handler) {
+    if (!el) return;
+    try {
+      if (el.dataset && el.dataset.listenerAdded) return;
+      el.addEventListener('click', handler);
+      if (el.dataset) el.dataset.listenerAdded = 'true';
+    } catch (e) { console.error('bindOnce failed', e); }
+  }
+  bindOnce(document.getElementById('exportPdfBtn'), exportQuotePDF);
+  bindOnce(document.getElementById('filePrintMenuBtn'), exportQuotePDF);
+  bindOnce(document.getElementById('printBtn'), exportQuotePDF);
+
+  // ensure logo fallback runs after DOM is ready
+  (function ensureLogoFallback() {
+    try {
+      const img = document.getElementById('companyLogo');
+      if (!img) return;
+      // prefer relative path (no file://). Use assets/logo.png relative to index.html
+      const src = img.getAttribute('src') || '';
+      if (!src.trim() || src.startsWith('file://')) {
+        img.src = 'assets/logo.png';
+      }
+      try { img.crossOrigin = 'anonymous'; } catch (e) {}
+      const onLogoError = function onLogoError() {
+        try {
+          img.removeEventListener('error', onLogoError);
+          img.src = "data:image/svg+xml;charset=utf-8," +
+            encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='240' height='60'><rect width='100%' height='100%' fill='#ffffff'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#666' font-family='system-ui,Segoe UI,Roboto,Arial' font-size='14'>Company Logo</text></svg>");
+        } catch (e) { /* ignore */ }
+      };
+      img.addEventListener('error', onLogoError);
+    } catch (e) { console.error('ensureLogoFallback failed', e); }
+  })();
+});
+
+/* Print and share helpers (defensive) */
+function printQuote() {
+  try {
+    const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (!allowed) { alert("Printing is disabled in trial mode. Please activate a premium license."); return; }
+    const hidden = _hideUiForExport();
+    try { window.print(); } finally { _restoreUiAfterExport(hidden); }
+  } catch (e) { console.error('printQuote failed', e); }
+}
+window.printQuote = printQuote;
+
+function shareQuote() {
+  try {
+    const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (!allowed) { alert("Sharing is a premium feature. Upgrade or log in as developer to enable."); return; }
+    const project = (typeof exportProjectJSON === 'function') ? exportProjectJSON() : { meta: {}, items: [] };
+    const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(() => alert('Share link copied to clipboard')).catch(() => alert('Share link ready: ' + url));
+    } else {
+      alert('Share link ready: ' + url);
+    }
+  } catch (e) { console.error('shareQuote failed', e); alert('Unable to prepare share link. See console for details.'); }
+}
+window.shareQuote = shareQuote;
+
+/* Print interception and screenshot mitigation (already idempotent) */
+function setupPrintInterception() {
+  try {
+    window.addEventListener('beforeprint', function (e) {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) {
+        try { e.preventDefault(); } catch (err) {}
+        alert("Printing is disabled in trial mode. Please activate a premium license to print.");
+        try { window.focus(); } catch (err) {}
+      }
+    });
+    const nativePrint = window.print;
+    window.print = function () {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) { alert("Printing is disabled in trial mode. Please activate a premium license to print."); return; }
+      return nativePrint.call(window);
+    };
+  } catch (e) { console.error('setupPrintInterception failed', e); }
+}
+setupPrintInterception();
+
+function setupScreenshotMitigation() {
+  try {
+    document.addEventListener('contextmenu', function (e) {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) {
+        const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('keydown', async function (e) {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) {
+        if (e.key === 'PrintScreen' || e.keyCode === 44) {
+          try { if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(''); } catch (err) {}
+        }
+      }
+    });
+  } catch (e) { console.error('setupScreenshotMitigation failed', e); }
+}
+setupScreenshotMitigation();
+/* Part 9 — File operations, projects badge, and license UI helpers (cleaned) */
+
+/* New project */
+function fileNew() { 
+try { 
+if (!confirm('Start a new project? Unsaved changes will be lost.')) return;
+ // Clear load table 
+ document.querySelectorAll('#loadTable tbody tr').forEach(r => r.remove()); 
+ // Clear quote table except total row 
+ const qtbody = document.getElementById('quoteTableBody'); 
+ if (qtbody) Array.from(qtbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); }); 
+ try { if (typeof addRow === 'function') addRow(); } catch (e) { console.error('addRow failed in fileNew', e); } 
+ try { if (typeof calculateTotal === 'function') calculateTotal(); } catch (e) { console.error('calculateTotal failed in fileNew', e); } 
+ try { if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals failed in fileNew', e); } 
+ try { if (typeof updateBranding === 'function') updateBranding(); } catch (e) { console.error('updateBranding failed in fileNew', e); } 
+ 
+ try { 
+ const idEl = document.getElementById('quoteIdDisplay'); 
+ const dateEl = document.getElementById('quoteDate'); 
+ if (idEl && typeof getNextQuoteId === 'function') idEl.innerText = getNextQuoteId(); 
+ if (dateEl) dateEl.innerText = new Date().toLocaleDateString(); 
+ } catch (e) { console.error('fileNew: set id/date failed', e); } 
+ try { 
+ if (typeof adjustProjectCount === 'function') adjustProjectCount(1); } catch (e) { console.error('adjustProjectCount failed in fileNew', e); } 
+ // Defer sizing to avoid re-entrancy 
+ try { 
+  if (typeof calculateSizing === 'function') { 
+  setTimeout(() => { 
+  try { calculateSizing(); } catch (e) { console.warn('calculateSizing failed (deferred) after fileNew', e); } 
+  }, 0); 
+  } 
+  } catch (e) { console.error('scheduling calculateSizing failed in fileNew', e); 
+  } 
+  } catch (e) { 
+  console.error('fileNew failed', e);
+  alert('Failed to start new project.');
+  }
+  } 
+  window.fileNew = fileNew;
+
+/* Open project from localStorage (defensive) */
+function fileOpen() {
+  try {
+    const saved = localStorage.getItem('ssp_project');
+    if (!saved) { alert('No saved project found in local storage.'); return; }
+    let project;
+    try { project = JSON.parse(saved); } catch (e) { console.error('fileOpen: invalid JSON', e); alert('Failed to load project: invalid data.'); return; }
+    if (project.meta?.company) {
+      const companyEl = document.getElementById('companyName');
+      if (companyEl) companyEl.value = project.meta.company;
+    }
+    const tbody = document.getElementById('quoteTableBody');
+    if (tbody) {
+      Array.from(tbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+      (project.items || []).forEach(it => {
+        try { addQuoteRow({ name: it.name, qty: it.qty, price: it.price }); } catch (e) { console.error('fileOpen: addQuoteRow failed', e); }
+      });
+      try { calculateQuoteTotals(); } catch (e) {}
+      alert('Project loaded from local storage.');
+    } else {
+      alert('Quote table not found in the DOM.');
+    }
+  } catch (e) { console.error('fileOpen failed', e); alert('Failed to load project: invalid data.'); }
+}
+window.fileOpen = fileOpen;
+
+/* Save project to localStorage and update index */
+function fileSave() {
+  try {
+    const project = exportProjectJSON();
+    const key = 'ssp_project_' + (project.meta?.id || Date.now());
+    localStorage.setItem(key, JSON.stringify(project));
+
+    const raw = localStorage.getItem('ssp_projects_list') || '[]';
+    let list = [];
+    try { list = JSON.parse(raw); } catch (e) { list = []; }
+    const entry = { id: project.meta.id || '', name: project.meta.company || '', savedAt: Date.now(), key };
+    const filtered = list.filter(p => p.id !== entry.id && p.key !== entry.key);
+    filtered.unshift(entry);
+    localStorage.setItem('ssp_projects_list', JSON.stringify(filtered.slice(0, 100)));
+
+    try {
+      const savedList = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]');
+      const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+      const limit = (typeof getLicenseLimit === 'function') ? getLicenseLimit() : 0;
+      const desired = limit ? Math.min(limit, Math.max(used, savedList.length)) : Math.max(used, savedList.length);
+      localStorage.setItem('ssp_projects_count', String(desired));
+      if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+    } catch (e) { console.error('sync count after save failed', e); }
+
+    alert('Project saved locally.');
+  } catch (e) { console.error('Failed to save project data', e); alert('Failed to save project.'); }
+}
+window.fileSave = fileSave;
+
+/* Save As (File Picker fallback to download) */
+async function fileSaveAs() {
+  try {
+    const project = exportProjectJSON();
+    const content = JSON.stringify(project, null, 2);
+    const suggestedName = (project.meta?.id ? `${project.meta.id}.json` : 'ssp_project.json');
+
+    if (window.showSaveFilePicker) {
+      try {
+        const opts = { types: [{ description: 'JSON file', accept: { 'application/json': ['.json'] } }], suggestedName };
+        const handle = await window.showSaveFilePicker(opts);
+        const writable = await handle.createWritable();
+        await writable.write(content);
+        await writable.close();
+        alert('Project saved.');
+        return;
+      } catch (e) { console.warn('showSaveFilePicker failed or cancelled', e); }
+    }
+
+    let filename = prompt('Enter filename to save (include .json)', suggestedName);
+    if (!filename) return;
+    filename = filename.replace(/[\\/:*?"<>|]/g, '') || suggestedName;
+
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    alert('Project saved to downloads as ' + filename);
+  } catch (e) { console.error('fileSaveAs fallback failed', e); alert('Failed to save file: ' + (e && e.message ? e.message : 'unknown error')); }
+}
+window.fileSaveAs = fileSaveAs;
+
+/* Export project JSON helper */
+function exportProjectJSON() {
+  try {
+    const items = Array.from(document.querySelectorAll('#quoteTableBody tr'))
+      .filter(r => r.id !== 'quoteTotalRow')
+      .map(r => ({
+        name: r.querySelector('.quote-item-name')?.value || '',
+        qty: Number(r.querySelector('.quote-item-qty')?.value || 0),
+        price: Number(r.querySelector('.quote-item-price')?.value || 0)
+      }));
+
+    const currentId = document.getElementById('quoteIdDisplay')?.innerText || `Quotation_${quoteCounter}`;
+    const totalRaw = Number(document.getElementById('quoteTotal')?.dataset.raw || 0);
+
+    return {
+      meta: {
+        company: document.getElementById('companyName')?.value || '',
+        date: new Date().toISOString(),
+        id: currentId
+      },
+      items,
+      totals: { total: totalRaw }
+    };
+  } catch (e) {
+    console.error('exportProjectJSON failed', e);
+    return { meta: { company: '', date: new Date().toISOString(), id: `Quotation_${quoteCounter}` }, items: [], totals: { total: 0 } };
+  }
+}
+window.exportProjectJSON = exportProjectJSON;
+
+/* Exit application */
+function exitApp() {
+  try {
+    if (confirm('Exit application?')) {
+      try { window.close(); } catch (e) { alert('Close the tab to exit the app.'); }
+    }
+  } catch (e) { console.error('exitApp failed', e); }
+}
+window.exitApp = exitApp;
+
+/* ======= Safe edgeTabsData loader (tolerant) ======= */ 
+(function(){ 
+    try { 
+        const el = document.getElementById('edgeTabsData'); 
+     if (!el) {
+     console.warn('edgeTabsData element not found in DOM; continuing with empty array'); 
+     Object.defineProperty(window, 'edge_all_open_tabs', { value: [], writable: false }); 
+     return; 
+} 
+const raw = el.textContent || '[]'; 
+try { 
+    const parsed = JSON.parse(raw); 
+    Object.defineProperty(window, 'edge_all_open_tabs', { value: parsed, writable: false }); 
+    console.log('edge_all_open_tabs loaded, length=', parsed.length); 
+} catch (parseErr) { 
+    console.warn('edgeTabsData parse failed; using empty array', parseErr); 
+    Object.defineProperty(window, 'edge_all_open_tabs', { value: [], writable: false });
+ } 
+} catch (e) { 
+    console.error('edgeTabsData loader error', e); 
+    Object.defineProperty(window, 'edge_all_open_tabs', { value: [], writable: false });
+ } 
+})();
+window._ssp_calcGuard = window._ssp_calcGuard || { inTotal: false, inSizing: false };
+/* License UI helpers */
+function updateUpgradeButton() {
+  try {
+    const btn = document.getElementById('licenseUpgradeBtn'); if (!btn) return;
+    const lic = (typeof getLicense === 'function') ? getLicense() : null;
+    if (!lic) { btn.innerText = "Activate Premium"; btn.onclick = (typeof openSalesFunnel === 'function' ? openSalesFunnel : () => {}); return; }
+    if (!isLicenseValid()) { btn.innerText = "Renew License"; btn.onclick = (typeof openSalesFunnel === 'function' ? openSalesFunnel : () => {}); return; }
+    if (lic.tier === "standard") { btn.innerText = "Upgrade to Pro"; btn.onclick = (typeof openSalesFunnel === 'function' ? openSalesFunnel : () => {}); return; }
+    btn.innerText = "Manage License"; btn.onclick = (typeof openSalesFunnel === 'function' ? openSalesFunnel : () => {});
+  } catch (e) { console.error('updateUpgradeButton failed', e); }
+}
+window.updateUpgradeButton = updateUpgradeButton;
+/* Part 10 — License, project load/delete, UI mode, project counters, and legacy quote helpers (cleaned) */
+
+function updateLicenseStatus() {
+  try {
+    const lic = (typeof getLicense === 'function') ? getLicense() : null;
+    const statusEl = document.getElementById('licenseStatus');
+    const expiryEl = document.getElementById('licenseExpiry');
+    if (typeof isLicenseValid === 'function' && isLicenseValid()) {
+      if (statusEl) statusEl.innerText = "Status: Valid (" + (lic?.tier || 'unknown') + ")";
+      if (expiryEl) expiryEl.innerText = lic?.expiry ? "Expires: " + new Date(lic.expiry).toLocaleDateString() : "Expires: Never";
+    } else {
+      if (statusEl) statusEl.innerText = "Status: INVALID or EXPIRED";
+      if (expiryEl) expiryEl.innerText = "Please activate a license.";
+    }
+  } catch (e) { console.error('updateLicenseStatus failed', e); }
+}
+window.updateLicenseStatus = updateLicenseStatus;
+
+/* Load / delete project helpers */
+function loadProjectByKey(key) {
+  try {
+    if (!key) { alert('No project key provided'); return; }
+    const raw = localStorage.getItem(key);
+    if (!raw) { alert('Project not found: ' + key); return; }
+    let project;
+    try { project = JSON.parse(raw); } catch (e) { console.error('loadProjectByKey: invalid JSON', e); alert('Failed to load project: invalid data.'); return; }
+
+    if (project.meta?.company) {
+      const companyEl = document.getElementById('companyName');
+      if (companyEl) companyEl.value = project.meta.company;
+    }
+    const tbody = document.getElementById('quoteTableBody');
+    if (tbody) {
+      Array.from(tbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+      (project.items || []).forEach(it => {
+        try { addQuoteRow({ name: it.name, qty: it.qty, price: it.price }); } catch (e) { console.error('loadProjectByKey: addQuoteRow failed', e); }
+      });
+      try { if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals(); else if (typeof recalcQuoteTotals === 'function') recalcQuoteTotals(); } catch (e) {}
+      const idEl = document.getElementById('quoteIdDisplay'); if (idEl) idEl.innerText = project.meta?.id || '';
+      alert('Project loaded: ' + (project.meta?.id || key));
+    } else {
+      alert('Quote table not found in the DOM.');
+    }
+  } catch (e) { console.error('loadProjectByKey failed', e); alert('Failed to load project: ' + (e && e.message ? e.message : 'unknown error')); }
+}
+window.loadProjectByKey = loadProjectByKey;
+
+function deleteSavedProject(key) {
+  try {
+    if (!key) { alert('No project key provided'); return; }
+    const rawList = localStorage.getItem('ssp_projects_list') || '[]';
+    let list = [];
+    try { list = JSON.parse(rawList); } catch (e) { list = []; }
+    const idx = list.findIndex(p => p.key === key);
+    if (idx === -1) { alert('Saved project not found in index'); return; }
+    localStorage.removeItem(key);
+    list.splice(idx, 1);
+    localStorage.setItem('ssp_projects_list', JSON.stringify(list));
+    try {
+      const savedList = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]');
+      const limit = (typeof getLicenseLimit === 'function') ? getLicenseLimit() : 0;
+      const desired = limit ? Math.min(limit, savedList.length) : savedList.length;
+      localStorage.setItem('ssp_projects_count', String(desired));
+    } catch (e) { console.error('recalc count after delete failed', e); }
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    alert('Project deleted.');
+  } catch (e) { console.error('deleteSavedProject failed', e); alert('Failed to delete project: ' + (e && e.message ? e.message : 'unknown error')); }
+}
+window.deleteSavedProject = deleteSavedProject;
+
+/* applyLicenseToUI and mode setters */
+function applyLicenseToUI() {
+  try {
+    const license = (typeof getLicense === 'function') ? getLicense() : null;
+    const isValid = !!license && license.tier && license.expiry && Date.now() < (Number(license.expiry) || 0);
+    const banner = document.getElementById('licenseBanner');
+    const watermark = document.getElementById('trialWatermark');
+    const exportBtn = document.getElementById('exportPdfBtn');
+    const printBtn = document.getElementById('printBtn');
+    if (!isValid) {
+      if (banner) banner.style.display = 'block';
+      if (watermark) watermark.style.display = 'block';
+      if (exportBtn) exportBtn.disabled = true;
+      if (printBtn) printBtn.disabled = true;
+    } else {
+      if (banner) banner.style.display = 'none';
+      if (watermark) watermark.style.display = 'none';
+      if (exportBtn) exportBtn.disabled = false;
+      if (printBtn) printBtn.disabled = false;
+    }
+  } catch (e) { console.error('applyLicenseToUI failed', e); }
+}
+window.applyLicenseToUI = applyLicenseToUI;
+
+function setTrialMode() {
+  try {
+    window.currentTier = 'trial';
+    if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions();
+    if (typeof updateFileMenuState === 'function') updateFileMenuState();
+  } catch (e) { console.error('setTrialMode failed', e); }
+}
+function setPremiumMode(tier) {
+  try {
+    window.currentTier = tier;
+    if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions();
+    if (typeof updateFileMenuState === 'function') updateFileMenuState();
+  } catch (e) { console.error('setPremiumMode failed', e); }
+}
+window.setTrialMode = setTrialMode;
+window.setPremiumMode = setPremiumMode;
+
+/* Project count helpers (defensive) */
+function adjustProjectCount(delta) {
+  try {
+    const current = Number(localStorage.getItem('ssp_projects_count') || 0);
+    const used = Math.max(0, current + Number(delta || 0));
+    localStorage.setItem('ssp_projects_count', String(used));
+    if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    return used;
+  } catch (e) { console.error('adjustProjectCount error', e); return Number(localStorage.getItem('ssp_projects_count') || 0); }
+}
+window.adjustProjectCount = adjustProjectCount;
+
+function getLicenseLimit() {
+  try {
+    const lic = JSON.parse(localStorage.getItem('ssp_license') || '{}');
+    return Number(lic.projectsLimit || lic.projectLimit || 0);
+  } catch (e) { return 0; }
+}
+window.getLicenseLimit = getLicenseLimit;
+
+function canCreateProject() {
+  try {
+    const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+    const limit = getLicenseLimit();
+    return !limit || used < limit;
+  } catch (e) { return true; }
+}
+window.canCreateProject = canCreateProject;
+
+/* Update create button state (defensive selector) */
+function updateCreateButtonState() {
+  try {
+    const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+    const limit = getLicenseLimit();
+    const newBtn = document.querySelector('button.new-project-btn, button#createProjectBtn, button.fileNewBtn');
+    if (newBtn) newBtn.disabled = !!(limit && used >= limit);
+  } catch (e) { console.error('updateCreateButtonState failed', e); }
+}
+window.updateCreateButtonState = updateCreateButtonState;
+
+/* Quote page: Add item button (simple row insertion for legacy UI) */
+document.addEventListener('DOMContentLoaded', () => {
+	try { 
+	try { 
+	if (!document.querySelectorAll('#loadTableBody tr').length) { 
+	if (typeof addRow === 'function') addRow(); } 
+	} catch (e) { console.error('addRow init failed', e);} 
+	try { 
+	const qtbody = document.getElementById('quoteTableBody'); 
+	if (qtbody && qtbody.querySelectorAll('tr').length <= 1) { 
+	if (typeof addQuoteRow === 'function') addQuoteRow({ name: '5kVA Hybrid Inverter', qty: 1, price: 500000 }); 
+} 
+} catch (e) { console.error('addQuoteRow init failed', e); } 
+try { if (typeof calculateTotal === 'function') calculateTotal(); }catch (e) { console.error('calculateTotal init failed', e); } 
+// Defer sizing to break potential mutual recursion 
+try { if (typeof calculateSizing === 'function') {
+	setTimeout(() => { 
+	try { calculateSizing(); } catch (e) { console.error('calculateSizing init failed (deferred)', e); } 
+	}, 0); 
+	} 
+	} catch (e) { console.error('scheduling calculateSizing init failed', e); } 
+	try { if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals init failed', e); } 
+	try { if (typeof updateBranding === 'function') updateBranding(); } catch (e) { console.error('updateBranding init failed', e); } 
+	try { if (typeof updateCurrencySymbol === 'function') updateCurrencySymbol(); } catch (e) { console.error('updateCurrencySymbol init failed', e); } 
+	try { if (typeof applyLicenseToUI === 'function') applyLicenseToUI(); } catch (e) { console.error('applyLicenseToUI init failed', e); } 
+	try { if (typeof updateCreateButtonState === 'function') updateCreateButtonState(); } 
+	catch (e) { console.error('updateCreateButtonState init failed', e); } } catch (e) { console.error('DOMContentLoaded initializers failed', e); } 
+});
+
+/* Remove quote item row handler (delegated) */
+document.addEventListener('click', e => {
+  try {
+    if (e.target && e.target.classList && e.target.classList.contains('removeQuoteItemBtn')) {
+      const row = e.target.closest('tr');
+      if (row) {
+        row.remove();
+        try { if (typeof recalcQuoteTotals === 'function') recalcQuoteTotals(); else if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals(); } catch (err) {}
+      }
+    }
+  } catch (err) { console.error('removeQuoteItemBtn handler failed', err); }
+});
+
+/* Quote row recalculation (legacy table cell total) */
+function recalcQuoteRow(row) {
+  try {
+    if (!row) return;
+    const qty = Number(row.querySelector('.quoteQty')?.value || 0);
+    const price = Number(row.querySelector('.quotePrice')?.value || 0);
+    const totalCell = row.querySelector('.quoteRowTotal') || row.querySelector('.quote-item-total');
+    const total = qty * price;
+    if (totalCell) {
+      if (totalCell.tagName && totalCell.tagName.toLowerCase() === 'input') {
+        totalCell.value = total.toFixed(2);
+        totalCell.dataset.raw = total.toString();
+      } else {
+        totalCell.innerText = total.toFixed(2);
+      }
+    }
+  } catch (e) { console.error('recalcQuoteRow failed', e); }
+}
+window.recalcQuoteRow = recalcQuoteRow;
+/* Part 11 — Legacy recalcQuoteTotals, input sync, and initializers (cleaned) */
+
+/* Legacy recalcQuoteTotals for older UI patterns */
+function recalcQuoteTotals() {
+  try {
+    let grandTotal = 0;
+    const tbody = document.getElementById('quoteTableBody');
+    if (!tbody) return;
+    [...tbody.querySelectorAll('tr')].forEach(row => {
+      if (row.id === 'quoteTotalRow') return;
+      const qty = Number(row.querySelector('.quoteQty')?.value || row.querySelector('.quote-item-qty')?.value || 0);
+      const price = Number(row.querySelector('.quotePrice')?.value || row.querySelector('.quote-item-price')?.value || 0);
+      const rowTotal = qty * price;
+      const rowTotalEl = row.querySelector('.quoteRowTotal') || row.querySelector('.quote-item-total');
+      if (rowTotalEl) {
+        if (rowTotalEl.tagName && rowTotalEl.tagName.toLowerCase() === 'input') {
+          rowTotalEl.value = rowTotal.toFixed(2);
+          rowTotalEl.dataset.raw = rowTotal.toString();
+        } else {
+          rowTotalEl.innerText = rowTotal.toFixed(2);
+        }
+      }
+      grandTotal += rowTotal;
+    });
+    const grandInput = document.getElementById('quoteTotal');
+    if (grandInput) {
+      if (grandInput.tagName && grandInput.tagName.toLowerCase() === 'input') {
+        grandInput.value = grandTotal.toFixed(2);
+      } else {
+        grandInput.innerText = grandTotal.toFixed(2);
+      }
+      grandInput.dataset.raw = grandTotal.toString();
+    }
+    // keep unified totals in sync, but avoid accidental recursion
+    if (typeof calculateQuoteTotals === 'function' && calculateQuoteTotals !== recalcQuoteTotals) {
+      try { calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals call failed in recalcQuoteTotals', e); }
+    }
+  } catch (e) { console.error('recalcQuoteTotals failed', e); }
+}
+window.recalcQuoteTotals = recalcQuoteTotals;
+
+/* Keep legacy and modern inputs in sync: update totals on input */
+document.addEventListener('input', e => {
+  try {
+    const t = e.target;
+    if (!t) return;
+    if (t.closest && t.closest('#quoteTableBody')) {
+      const row = t.closest('tr');
+      if (row) recalcQuoteRow(row);
+      recalcQuoteTotals();
+      if (typeof calculateQuoteTotals === 'function' && calculateQuoteTotals !== recalcQuoteTotals) {
+        try { calculateQuoteTotals(); } catch (err) { console.error('calculateQuoteTotals failed in input handler', err); }
+      }
+    }
+  } catch (err) { console.error('quote input handler failed', err); }
+});
+
+/* Ensure initial bindings and state on DOM ready */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    // initialize one empty load row if none exist
+    if (!document.querySelectorAll('#loadTableBody tr').length) {
+      try { addRow(); } catch (e) { console.error('addRow init failed', e); }
+    }
+
+    // initialize one quote row if none exist (except total row)
+    const qtbody = document.getElementById('quoteTableBody');
+    if (qtbody && qtbody.querySelectorAll('tr').length <= 1) {
+      // leave the total row intact; add a starter row
+      try { addQuoteRow({ name: '5kVA Hybrid Inverter', qty: 1, price: 500000 }); } catch (e) { console.error('addQuoteRow init failed', e); }
+    }
+
+    // initial UI updates (defensive calls)
+    try { calculateTotal(); } catch (e) { console.error('calculateTotal init failed', e); }
+    try { calculateSizing(); } catch (e) { console.error('calculateSizing init failed', e); }
+    try { calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals init failed', e); }
+    try { updateBranding(); } catch (e) { console.error('updateBranding init failed', e); }
+    try { updateCurrencySymbol(); } catch (e) { console.error('updateCurrencySymbol init failed', e); }
+    try { applyLicenseToUI(); } catch (e) { console.error('applyLicenseToUI init failed', e); }
+    try { updateCreateButtonState(); } catch (e) { console.error('updateCreateButtonState init failed', e); }
+  } catch (e) { console.error('DOMContentLoaded initializers failed', e); }
+});
+
+/* Quote population and initialization helpers (continued) */
+function calculateQuoteTotalsIfNeeded() {
+  try {
+    if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+    else if (typeof recalcQuoteTotals === 'function') recalcQuoteTotals();
+  } catch (e) { console.error('calculateQuoteTotalsIfNeeded failed', e); }
+}
+window.calculateQuoteTotalsIfNeeded = calculateQuoteTotalsIfNeeded;
+
+/* Populate quote table from sizing (alias kept) */
+window.populateQuoteFromSizingIfNeeded = populateQuoteFromSizing;
+
+/* Export/print/share bindings (idempotent) */
+function bindExportButtons() {
+  try {
+    const ids = ['exportPdfBtn', 'filePrintMenuBtn', 'printBtn', 'fileShareMenuBtn'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.dataset && el.dataset.listenerAdded) return;
+      el.addEventListener('click', () => {
+        try { window.__allowExport = true; } catch (e) {}
+        try {
+          if (typeof _exportQuotePDF_impl === 'function') _exportQuotePDF_impl();
+          else console.warn('_exportQuotePDF_impl not defined');
+        } finally { try { window.__allowExport = false; } catch (e) {} }
+      });
+      if (el.dataset) el.dataset.listenerAdded = 'true';
+    });
+  } catch (e) { console.error('bindExportButtons failed', e); }
+}
+window.bindExportButtons = bindExportButtons;
+
+/* Simple UI utility: safe text setter */
+function setTextSafe(id, text) {
+  try {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerText = text;
+  } catch (e) { console.error('setTextSafe failed for', id, e); }
+}
+window.setTextSafe = setTextSafe;
+
+/* Small helper to ensure inputs have name attributes (for forms) */
+function ensureQuoteInputsHaveNames() {
+  try {
+    document.querySelectorAll('#quoteTableBody input').forEach((inp, idx) => {
+      if (!inp.name) {
+        const cls = inp.className ? inp.className.replace(/\s+/g, '_') : 'input';
+        inp.name = `${cls}_${idx}`;
+      }
+    });
+  } catch (e) { console.error('ensureQuoteInputsHaveNames failed', e); }
+}
+window.ensureQuoteInputsHaveNames = ensureQuoteInputsHaveNames;
+/* Part 12 — restore state, small utilities, and global listeners (cleaned) */
+
+/* Lightweight restore last state (attempt to rehydrate UI) */
+function restoreLastState() {
+  try {
+    // restore company name
+    const projectKey = localStorage.getItem('ssp_last_project_key');
+    if (projectKey) {
+      const raw = localStorage.getItem(projectKey);
+      if (raw) {
+        try {
+          const project = JSON.parse(raw);
+          if (project.meta?.company) {
+            const companyEl = document.getElementById('companyName');
+            if (companyEl) companyEl.value = project.meta.company;
+          }
+        } catch (e) { /* ignore parse errors */ }
+      }
+    }
+    // restore currency
+    const cur = localStorage.getItem('ssp_currency') || '';
+    const curSel = document.getElementById('currencySelector');
+    if (cur && curSel) curSel.value = cur;
+  } catch (e) { console.error('restoreLastState failed', e); }
+}
+window.restoreLastState = restoreLastState;
+
+/* Small utility: safe element creation for table cells */
+function createCellWithInput(type, className, name, value, attrs = {}) {
+  try {
+    const td = document.createElement('td');
+    const inp = document.createElement('input');
+    inp.type = type || 'text';
+    if (className) inp.className = className;
+    if (name) inp.name = name;
+    if (typeof value !== 'undefined') inp.value = value;
+    Object.keys(attrs || {}).forEach(k => {
+      try { inp.setAttribute(k, attrs[k]); } catch (e) {}
+    });
+    td.appendChild(inp);
+    return td;
+  } catch (e) {
+    console.error('createCellWithInput failed', e);
+    const td = document.createElement('td');
+    td.textContent = '';
+    return td;
+  }
+}
+window.createCellWithInput = createCellWithInput;
+
+/* Small helper to safely query and return integer value from input */
+function safeNumberFromInput(id, fallback = 0) {
+  try {
+    const el = document.getElementById(id);
+    if (!el) return fallback;
+    const n = Number(el.value);
+    return isFinite(n) ? n : fallback;
+  } catch (e) { return fallback; }
+}
+window.safeNumberFromInput = safeNumberFromInput;
+
+/* Ensure export bindings and initial UI state after DOM ready */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    if (typeof bindExportButtons === 'function') bindExportButtons();
+    if (typeof ensureQuoteInputsHaveNames === 'function') ensureQuoteInputsHaveNames();
+    restoreLastState();
+    // Attach simple listeners for currency selector
+    const curSel = document.getElementById('currencySelector');
+    if (curSel) curSel.addEventListener('change', () => { try { localStorage.setItem('ssp_currency', curSel.value); updateCurrencySymbol(); } catch (e) {} });
+  } catch (e) { console.error('DOMContentLoaded post-init failed', e); }
+});
+
+/* Utility: check premium active (simple wrapper) */
+function isPremiumActive() {
+  try {
+    const lic = (typeof getLicense === 'function') ? getLicense() : null;
+    if (!lic) return false;
+    if (typeof isLicenseValid === 'function' && !isLicenseValid()) return false;
+    return true;
+  } catch (e) { return false; }
+}
+window.isPremiumActive = isPremiumActive;
+
+/* Update file menu state (defensive) */
+function updateFileMenuState() {
+  try {
+    const filePrintMenuBtn = document.getElementById('filePrintMenuBtn');
+    const fileShareMenuBtn = document.getElementById('fileShareMenuBtn');
+    const enabled = isPremiumActive() || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (filePrintMenuBtn) { filePrintMenuBtn.disabled = !enabled; filePrintMenuBtn.title = enabled ? '' : 'Premium required'; }
+    if (fileShareMenuBtn) { fileShareMenuBtn.disabled = !enabled; fileShareMenuBtn.title = enabled ? '' : 'Premium required'; }
+  } catch (e) { console.error('updateFileMenuState failed', e); }
+}
+window.updateFileMenuState = updateFileMenuState;
+
+/* Simple UI updater for projects badge and create button */
+function updateProjectsBadgeAndCreateState() {
+  try {
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+  } catch (e) { console.error('updateProjectsBadgeAndCreateState failed', e); }
+}
+window.updateProjectsBadgeAndCreateState = updateProjectsBadgeAndCreateState;
+
+/* Lightweight attachGlobalListeners if needed */
+function attachGlobalListeners() {
+  try {
+    // keyboard shortcuts (Ctrl/Cmd+S to save)
+    window.addEventListener('keydown', (e) => {
+      try {
+        const meta = e.ctrlKey || e.metaKey;
+        if (meta && e.key && (e.key.toLowerCase() === 's')) {
+          e.preventDefault();
+          if (typeof fileSave === 'function') fileSave();
+        }
+      } catch (err) {}
+    });
+
+    // ensure export buttons bound
+    if (typeof bindExportButtons === 'function') bindExportButtons();
+
+    // update UI when storage changes
+    window.addEventListener('storage', (e) => {
+      try {
+        if (['ssp_license','ssp_projects_list','ssp_projects_count'].includes(e.key)) {
+          try { if (typeof applyLicenseToUI === 'function') applyLicenseToUI(); } catch (err) {}
+          try { if (typeof updateProjectsBadge === 'function') updateProjectsBadge(); } catch (err) {}
+        }
+      } catch (err) {}
+    });
+  } catch (e) { console.error('attachGlobalListeners failed', e); }
+}
+window.attachGlobalListeners = attachGlobalListeners;
+/* Part 13 — final sanity, utilities, and safe DOM helpers (cleaned) */
+
+/* Final sanity function - runs after DOM ready to ensure UI is consistent */
+window._finalSanity = function() {
+  try {
+    try { if (typeof restoreLastState === 'function') restoreLastState(); } catch (e) {}
+    try { if (typeof calculateTotal === 'function') calculateTotal(); } catch (e) {}
+    try {
+      if (typeof calculateSizing === 'function') {
+        setTimeout(() => {
+          try { calculateSizing(); } catch (e) { console.error('calculateSizing failed (deferred) in _finalSanity', e); }
+        }, 0);
+      }
+    } catch (e) {}
+    try { if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals(); } catch (e) {}
+    try { if (typeof updateBranding === 'function') updateBranding(); } catch (e) {}
+    try { if (typeof updateCurrencySymbol === 'function') updateCurrencySymbol(); } catch (e) {}
+    try { if (typeof applyLicenseToUI === 'function') applyLicenseToUI(); } catch (e) {}
+    try { if (typeof updateFileMenuState === 'function') updateFileMenuState(); } catch (e) {}
+    try { if (typeof updateProjectsBadgeAndCreateState === 'function') updateProjectsBadgeAndCreateState(); } catch (e) {}
+
+    // bind export handlers idempotently
+    try {
+      const bindExportHandler = (el) => {
+        if (!el) return;
+        if (el.dataset && el.dataset.listenerAdded) return;
+        el.addEventListener('click', () => {
+          try { window.__allowExport = true; } catch (e) {}
+          try {
+            if (typeof _exportQuotePDF_impl === 'function') _exportQuotePDF_impl();
+            else console.warn('_exportQuotePDF_impl not defined');
+          } finally { try { window.__allowExport = false; } catch (e) {} }
+        });
+        if (el.dataset) el.dataset.listenerAdded = 'true';
+      };
+      bindExportHandler(document.getElementById('exportPdfBtn'));
+      bindExportHandler(document.getElementById('filePrintMenuBtn'));
+      bindExportHandler(document.getElementById('printBtn'));
+      bindExportHandler(document.getElementById('fileShareMenuBtn'));
+    } catch (e) { console.warn('Export button binding failed', e); }
+
+  } catch (e) { console.warn('final sanity pass failed', e); }
+};
+
+/* Run final sanity after DOM ready */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', window._finalSanity);
+} else {
+  setTimeout(window._finalSanity, 0);
+}
+
+/* Defensive no-op export (keeps previous behavior if referenced) */
+window._ssp_finalize_noop = function() { return true; };
+
+/* Simple debounce utility */
+function debounce(fn, wait = 200) {
+  let t = null;
+  return function(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => { try { fn.apply(this, args); } catch (e) { console.error('debounce handler error', e); } }, wait);
+  };
+}
+window.debounce = debounce;
+
+/* Throttle utility */
+function throttle(fn, limit = 200) {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      try { fn.apply(this, args); } catch (e) { console.error('throttle handler error', e); }
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
+}
+window.throttle = throttle;
+
+/* Safe DOM text setter (handles inputs and elements) */
+function setValueSafe(selectorOrEl, value) {
+  try {
+    const el = (typeof selectorOrEl === 'string') ? document.querySelector(selectorOrEl) : selectorOrEl;
+    if (!el) return false;
+    if ('value' in el) { el.value = value; return true; }
+    el.innerText = value;
+    return true;
+  } catch (e) { console.error('setValueSafe failed', e); return false; }
+}
+window.setValueSafe = setValueSafe;
+
+/* Safe DOM getter for numeric values */
+function getNumericValue(selectorOrEl, fallback = 0) {
+  try {
+    const el = (typeof selectorOrEl === 'string') ? document.querySelector(selectorOrEl) : selectorOrEl;
+    if (!el) return fallback;
+    const v = ('value' in el) ? el.value : el.innerText;
+    const n = Number(v);
+    return isFinite(n) ? n : fallback;
+  } catch (e) { return fallback; }
+}
+window.getNumericValue = getNumericValue;
+
+/* Small helper: format date for display */
+function formatDateShort(d) {
+  try {
+    const dt = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(dt.getTime())) return '';
+    return dt.toLocaleDateString();
+  } catch (e) { return ''; }
+}
+window.formatDateShort = formatDateShort;
+
+/* Lightweight logger wrapper (no-op in production if console absent) */
+function logDebug(...args) {
+  try { if (window.__dev_override_enabled) console.debug(...args); } catch (e) {}
+}
+window.logDebug = logDebug;
+
+/* Defensive: ensure key DOM elements exist before heavy operations */
+function ensureCoreDom() {
+  try {
+    if (!document.getElementById('quoteTableBody')) {
+      const tb = document.createElement('tbody'); tb.id = 'quoteTableBody';
+      const table = document.getElementById('quoteTable') || document.querySelector('table');
+      if (table) table.appendChild(tb);
+    }
+    if (!document.getElementById('quoteTotal')) {
+      const inp = document.createElement('input'); inp.type = 'text'; inp.id = 'quoteTotal'; inp.value = '0.00'; document.body.appendChild(inp);
+    }
+  } catch (e) { console.error('ensureCoreDom failed', e); }
+}
+window.ensureCoreDom = ensureCoreDom;
+
+/* Defensive: safe JSON parse */
+function safeJsonParse(str, fallback = null) {
+  try { return JSON.parse(str); } catch (e) { return fallback; }
+}
+window.safeJsonParse = safeJsonParse;
+
+/* Small helper to download a blob (used by fileSaveAs fallback) */
+function downloadBlob(content, filename = 'download.txt', type = 'text/plain') {
+  try {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (e) { console.error('downloadBlob failed', e); return false; }
+}
+window.downloadBlob = downloadBlob;
+
+/* Small helper: safe element remove */
+function safeRemove(selectorOrEl) {
+  try {
+    const el = (typeof selectorOrEl === 'string') ? document.querySelector(selectorOrEl) : selectorOrEl;
+    if (!el) return false;
+    el.remove();
+    return true;
+  } catch (e) { return false; }
+}
+window.safeRemove = safeRemove;
+
+/* Simple modal helper (non-blocking) */
+function showModalMessage(title, message, opts = {}) {
+  try {
+    const id = 'ssp_modal_message';
+    let modal = document.getElementById(id);
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = id;
+      modal.style.cssText = 'position:fixed;left:50%;top:20%;transform:translateX(-50%);background:#fff;border:1px solid #ccc;padding:16px;z-index:100000;box-shadow:0 8px 24px rgba(0,0,0,0.2);max-width:90%;min-width:280px;font-family:system-ui,Segoe UI,Roboto,Arial';
+      modal.innerHTML = `<strong id="${id}_title"></strong><div id="${id}_body" style="margin-top:8px"></div><div style="margin-top:12px;text-align:right"><button id="${id}_close">Close</button></div>`;
+      document.body.appendChild(modal);
+      document.getElementById(`${id}_close`)?.addEventListener('click', () => { try { modal.remove(); } catch (e) {} });
+    }
+    document.getElementById(`${id}_title`).innerText = title || 'Message';
+    document.getElementById(`${id}_body`).innerText = message || '';
+    if (opts.autoClose && Number(opts.autoClose) > 0) {
+      setTimeout(() => { try { modal.remove(); } catch (e) {} }, Number(opts.autoClose));
+    }
+    return modal;
+  } catch (e) { console.error('showModalMessage failed', e); return null; }
+}
+window.showModalMessage = showModalMessage;
+

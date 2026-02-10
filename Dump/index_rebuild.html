@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sprint Solar Pro</title>
+  <style>
+    :root {
+      --bg:#f4f4f4; --text:#111; --muted:#555; --primary:#2c3e50; --nav-bg:#444; --header-bg:#333; --accent:#0b5fff;
+    }
+    html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;background:var(--bg);color:var(--text)}
+    header.site-header{background:var(--header-bg);color:#fff;padding:18px 12px;text-align:center}
+    header .brand-title{margin:0;font-size:22px;font-weight:700}
+    header .brand-sub{margin:6px 0 0;font-size:13px;opacity:.95;color:#ffd700}
+    nav.top-nav{background:var(--nav-bg);padding:10px;display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap}
+    nav.top-nav button,.dropdown .label{background:var(--primary);color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-size:14px}
+    nav.top-nav button:hover,.dropdown .label:hover{background:#34495e}
+    .dropdown{position:relative;display:inline-block}
+    .dropdown-content{display:none;position:absolute;right:0;background:#fff;min-width:220px;box-shadow:0 8px 20px rgba(0,0,0,.15);z-index:10000;border-radius:6px;overflow:hidden;color:#000}
+    .dropdown[aria-expanded="true"] .dropdown-content{display:block}
+    .dropdown-content button{display:block;width:100%;text-align:left;padding:10px 12px;border:none;background:transparent;cursor:pointer;color:#000;font-size:14px}
+    .dropdown-content button:hover{background:#f0f0f0}
+    main{padding:18px;max-width:1200px;margin:18px auto;box-sizing:border-box}
+    .page{display:none;background:#fff;padding:18px;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.06)}
+    .page.active{display:block}
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+    label{font-weight:600;font-size:13px}
+    input,select,textarea,button{font:inherit}
+    input,select,textarea{width:100%;padding:8px;box-sizing:border-box;margin:6px 0;border:1px solid #d1d7df;border-radius:6px;background:#fff}
+    table{width:100%;border-collapse:collapse;margin-top:10px}
+    th,td{border:1px solid #ddd;padding:8px;text-align:left;vertical-align:middle}
+    th.numeric, td.numeric { text-align:right; font-variant-numeric: tabular-nums; }
+    .action-cell{width:120px}
+    .muted{color:var(--muted)}
+    .small{font-size:13px}
+    footer{text-align:center;padding:12px;font-size:13px;color:#666}
+    .btn{background:var(--accent);color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer}
+    .btn-ghost{background:transparent;border:1px solid #d1d7df;color:var(--text)}
+    .right{display:flex;justify-content:flex-end;gap:8px}
+
+    /* Quote header layout */
+    .quote-header { display:flex; flex-direction:column; gap:6px; margin-bottom:12px; }
+    .brand-row { display:flex; align-items:center; gap:12px; justify-content:flex-start; }
+    .company-logo { height:48px; width:auto; object-fit:contain; border:1px solid #eee; background:#fff; padding:6px; border-radius:6px; flex:0 0 auto; }
+    .company-name { font-weight:900; font-size:28px; letter-spacing:0.6px; text-transform:uppercase; display:inline-block; vertical-align:middle; color:var(--text); }
+    .company-slogan { font-size:13px; color:var(--muted); text-align:center; margin:0; font-weight:700; } /* centered & bold */
+    .company-address { font-size:12px; color:var(--muted); margin-top:4px; white-space:pre-line; text-align:left; }
+    .quote-title { font-size:22px; font-weight:800; margin:6px 0 0 0; text-align:center; }
+    .quote-meta { font-size:12px; color:#666; margin-top:4px; text-align:right; }
+
+    .quote-actions { margin-top:12px; display:flex; gap:8px; justify-content:flex-end; }
+    .quote-print-exclude { page-break-inside:avoid; }
+    .signature-box { border:1px dashed #ccc; padding:12px; border-radius:6px; min-height:48px; background:#fafafa; }
+    .sizing-section { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .sizing-card { padding:12px; border:1px solid #eef3fb; border-radius:8px; background:#fff; }
+    .label-muted { color:var(--muted); font-size:13px; }
+
+    @media print {
+      header.site-header, nav.top-nav, .quote-print-exclude, footer { display: none !important; }
+      body { background: #fff; color: #000; }
+      .page { box-shadow: none; border: none; padding: 0; }
+      body * { visibility: hidden; }
+      #quote, #quote * { visibility: visible; }
+      #quote { position: absolute; left: 0; top: 0; width: 100%; }
+    }
+  </style>
+
+  <!-- html2pdf loader: try CDN then local fallback; sets window.__html2pdfLoaded -->
+  <script>
+    window.__html2pdfLoaded = false;
+    (function () {
+      function markLoaded() { window.__html2pdfLoaded = true; }
+      var s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js';
+      s.async = true;
+      s.onload = markLoaded;
+      s.onerror = function () {
+        var s2 = document.createElement('script');
+        s2.src = './libs/html2pdf.bundle.min.js';
+        s2.async = true;
+        s2.onload = markLoaded;
+        s2.onerror = function () {
+          console.warn('html2pdf failed to load from CDN and local fallback.');
+          window.__html2pdfLoaded = false;
+        };
+        document.head.appendChild(s2);
+      };
+      document.head.appendChild(s);
+    })();
+  </script>
+</head>
+<body>
+  <header class="site-header" role="banner">
+    <div>
+      <h1 class="brand-title">Sprint Solar Pro</h1>
+      <div id="appStatus" class="brand-sub">Loading…</div>
+    </div>
+  </header>
+
+  <nav class="top-nav" role="navigation" aria-label="Main navigation">
+    <button id="navHomeBtn" data-page="home">Home</button>
+    <button id="navSystemBtn" data-page="system">System Input</button>
+    <button id="navLicenseBtn" data-page="license">License</button>
+    <button id="navLoadBtn" data-page="load">Load</button>
+    <button id="navSizingBtn" data-page="sizing">Sizing</button>
+    <button id="navQuoteBtn" data-page="quote">Quotation</button>
+
+    <div class="dropdown" id="fileDropdown" tabindex="0" aria-haspopup="true" aria-expanded="false" aria-label="File options">
+      <div class="label" id="fileDropdownBtn" role="button" aria-controls="fileDropdownMenu">Options ▾</div>
+      <div class="dropdown-content" id="fileDropdownMenu" role="menu" aria-labelledby="fileDropdownBtn">
+        <button id="fileNewBtn" role="menuitem" data-action="new">New</button>
+        <button id="fileOpenBtn" role="menuitem" data-action="open">Open</button>
+        <button id="fileSaveBtn" role="menuitem" data-action="save">Save</button>
+        <button id="fileSaveAsBtn" role="menuitem" data-action="saveAs">Save As</button>
+        <button id="filePrintMenuBtn" role="menuitem" data-action="print">Print</button>
+        <button id="fileShareMenuBtn" role="menuitem" data-action="share">Share</button>
+        <button id="fileExitBtn" role="menuitem" data-action="exit">Exit</button>
+      </div>
+    </div>
+  </nav>
+
+  <main>
+    <section id="home" class="page active" aria-labelledby="homeTitle">
+      <h2 id="homeTitle">Welcome</h2>
+      <p class="muted">Accurate solar system sizing and quotation software for installers.</p>
+    </section>
+
+    <section id="system" class="page" aria-labelledby="systemTitle" style="display:none;">
+      <h2 id="systemTitle">System Input</h2>
+
+      <div class="grid-2">
+        <div>
+          <h3>Inverter</h3>
+          <label for="inverterType">Type</label>
+          <select id="inverterType">
+            <option value="hybrid">Hybrid</option>
+            <option value="offgrid">Off-Grid</option>
+            <option value="grid-tie">Grid-Tie</option>
+          </select>
+
+          <label for="inverterRatedPower">Rated power (kW)</label>
+          <input id="inverterRatedPower" type="number" min="0" step="0.1" value="5" />
+
+          <label for="inverterOutputType">Inverter output</label>
+          <select id="inverterOutputType">
+            <option value="AC">AC</option>
+            <option value="DC">DC</option>
+          </select>
+
+          <label for="inverterVoltage">Inverter AC output (V)</label>
+          <input id="inverterVoltage" type="number" min="0" step="1" value="230" />
+
+          <label for="inverterDcBusVoltage">Inverter DC bus (V)</label>
+          <input id="inverterDcBusVoltage" type="number" min="0" step="1" value="48" />
+
+          <label for="inverterEfficiency">Efficiency (%)</label>
+          <input id="inverterEfficiency" type="number" min="0" max="100" step="0.1" value="95" />
+        </div>
+
+        <div>
+          <h3>Battery</h3>
+          <label for="batteryTypeSelect">Battery type</label>
+          <div style="display:flex;gap:8px;">
+            <select id="batteryTypeSelect" style="flex:1;">
+              <option value="">-- select or type --</option>
+              <option value="LiFePO4">LiFePO4</option>
+              <option value="AGM">AGM</option>
+              <option value="Lead-Acid">Lead-Acid</option>
+              <option value="Gel">Gel</option>
+            </select>
+            <input id="batteryType" type="text" placeholder="Or type battery type" style="flex:1;" />
+          </div>
+
+          <label for="batteryCapacity">Capacity (Ah)</label>
+          <input id="batteryCapacity" type="number" min="0" step="1" value="200" />
+
+          <label for="batteryVoltage">Battery voltage (V)</label>
+          <input id="batteryVoltage" type="number" min="0" step="1" value="48" />
+
+          <label for="batteryDoD">Depth of discharge (%)</label>
+          <input id="batteryDoD" type="number" min="0" max="100" step="1" value="80" />
+        </div>
+      </div>
+
+      <div style="margin-top:12px;">
+        <h3>Solar & Site</h3>
+        <label for="panelWatt">Panel wattage (W)</label>
+        <input id="panelWatt" type="number" min="0" step="1" value="550" />
+
+        <label for="panelVoltage">Panel nominal voltage (V)</label>
+        <input id="panelVoltage" type="number" min="0" step="1" value="40" />
+
+        <label for="sunHours">Peak sun hours (h/day)</label>
+        <input id="sunHours" type="number" min="0" step="0.1" value="5" />
+
+        <label for="deratingFactor">Derating factor (%)</label>
+        <input id="deratingFactor" type="number" min="0" max="100" step="1" value="80" />
+      </div>
+
+      <div style="margin-top:12px;">
+        <h3>Project & Branding</h3>
+        <label for="autonomyDays">Days of autonomy</label>
+        <input id="autonomyDays" type="number" min="0" step="0.01" value="2" />
+
+        <label for="companyName">Company name</label>
+        <input id="companyName" type="text" placeholder="Your Company Name" value="Hunter Functional Telecomms Nigeria Limited" />
+
+        <label for="companySlogan">Company slogan (optional)</label>
+        <input id="companySlogan" type="text" placeholder="Reliable Power. Sustainable Future." value="Reliable Power. Sustainable Future." />
+
+        <label for="companyAddress">Company address</label>
+        <input id="companyAddress" type="text" placeholder="Company address (used in quote header)" value="Plot 9 Hon Rufus Oyedepo Street, Silver Land Zone, Thera Annex Estate, Sangotedo" />
+
+        <label for="companyLogoUrl">Company logo URL or relative path (e.g., assets/logo.png)</label>
+        <input id="companyLogoUrl" type="text" placeholder="https://example.com/logo.png or assets/logo.png" />
+
+        <label for="currencySelector">Currency (enter symbol or code)</label>
+        <input list="currencyList" id="currencySelector" name="currencySelector" value="NGN" />
+        <datalist id="currencyList">
+          <option value="₦">₦ - Nigerian Naira</option>
+          <option value="NGN">NGN</option>
+          <option value="$">$ - US Dollar</option>
+          <option value="USD">USD</option>
+          <option value="€">€ - Euro</option>
+          <option value="EUR">EUR</option>
+          <option value="£">£ - British Pound</option>
+          <option value="GBP">GBP</option>
+          <option value="¥">¥ - Japanese Yen</option>
+          <option value="JPY">JPY</option>
+          <option value="₹">₹ - Indian Rupee</option>
+          <option value="INR">INR</option>
+        </datalist>
+      </div>
+
+      <div class="right" style="margin-top:12px;">
+        <button id="saveSystemBtn" class="btn">Save System & Go to Load</button>
+        <button id="resetSystemBtn" class="btn-ghost">Reset</button>
+      </div>
+    </section>
+
+    <section id="load" class="page" style="display:none;">
+      <h2>Load Analysis</h2>
+      <table class="loadTable">
+        <thead>
+          <tr><th>Appliance</th><th>Qty</th><th>Power (W)</th><th>Hours/day</th><th>Energy (Wh/day)</th><th class="action-cell">Action</th></tr>
+        </thead>
+        <tbody id="loadTableBody"></tbody>
+        <tfoot>
+          <tr><td colspan="4" style="text-align:right"><strong>Total daily energy</strong></td><td><strong id="totalEnergy">0</strong></td><td></td></tr>
+        </tfoot>
+      </table>
+      <div style="margin-top:12px;">
+        <button id="addApplianceBtn" class="btn">Add appliance</button>
+        <button id="clearLoadBtn" class="btn-ghost">Clear</button>
+      </div>
+      <div style="margin-top:12px;" class="right">
+        <button id="calcSizingBtn" class="btn">Calculate Sizing</button>
+      </div>
+    </section>
+
+    <section id="sizing" class="page" style="display:none;">
+      <h2>System Sizing Results</h2>
+      <div class="sizing-section">
+        <div class="sizing-card">
+          <h3>Summary</h3>
+          <p>Daily energy: <strong id="dailyEnergyDisplay">0</strong> Wh</p>
+          <p>Peak load: <strong id="peakLoadDisplay">0</strong> W</p>
+          <p>Recommended inverter qty: <strong id="inverterQtyResult">0</strong></p>
+          <p>Days of autonomy: <strong id="autonomyDisplay">0</strong></p>
+        </div>
+        <div class="sizing-card">
+          <h3>Battery Bank</h3>
+          <p>Batteries qty: <strong id="batteryQty">0</strong></p>
+          <p>Series: <strong id="batterySeriesCount">1</strong></p>
+          <p>Parallel: <strong id="batteryParallelCount">0</strong></p>
+          <p>Estimated battery Ah required: <strong id="batteryAhRequired">0</strong> Ah</p>
+        </div>
+        <div class="sizing-card">
+          <h3>Solar Array</h3>
+          <p>Panels qty: <strong id="panelQty">0</strong></p>
+          <p>Panels per string (series): <strong id="panelSeriesCount">0</strong></p>
+          <p>Parallel strings: <strong id="panelParallelStrings">0</strong></p>
+        </div>
+        <div class="sizing-card">
+          <h3>Notes</h3>
+          <p class="label-muted">Estimates provided for preliminary design. Verify with vendor datasheets and site constraints before procurement or installation.</p>
+        </div>
+      </div>
+      <div style="margin-top:12px;" class="right">
+        <button id="toQuoteBtn" class="btn">Proceed to Quotation</button>
+      </div>
+    </section>
+
+    <section id="quote" class="page" style="display:none;">
+      <div id="quoteHeaderContainer"></div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+        <div>
+          <label for="customerName">Customer name</label>
+          <input id="customerName" type="text" placeholder="Enter customer name" />
+        </div>
+        <div>
+          <label for="customerContact">Customer contact (phone/email)</label>
+          <input id="customerContact" type="text" placeholder="Enter phone or email" />
+        </div>
+        <div style="grid-column:1 / -1;">
+          <label for="customerAddress">Customer address</label>
+          <input id="customerAddress" type="text" placeholder="Enter address" />
+        </div>
+      </div>
+
+      <div style="margin-bottom:12px;">
+        <label for="quoteCurrency">Currency symbol</label>
+        <input id="quoteCurrency" type="text" value="₦" />
+      </div>
+
+      <table class="quote-table" role="table" aria-label="Quotation items">
+        <thead style="background:var(--primary);color:#fff">
+          <tr>
+            <th>Item</th>
+            <th>Qty</th>
+            <th class="numeric">Unit price</th>
+            <th class="numeric">Total</th>
+            <th class="action-cell">Action</th>
+          </tr>
+        </thead>
+        <tbody id="quoteTableBody"></tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="text-align:right"><strong>Subtotal</strong></td>
+            <td class="numeric"><strong id="quoteSubtotal">0.00</strong></td>
+            <td></td>
+          </tr>
+          <tr>
+            <td colspan="3" style="text-align:right"><strong>Tax (%)</strong></td>
+            <td class="numeric"><input id="quoteTax" type="number" value="0" min="0" step="0.1" /></td>
+            <td></td>
+          </tr>
+          <tr>
+            <td colspan="3" style="text-align:right"><strong>Total</strong></td>
+            <td class="numeric"><strong id="quoteTotal">0.00</strong></td>
+            <td></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      <div style="margin-top:12px;">
+        <label for="amountWords">Amount in words</label>
+        <textarea id="amountWords" rows="2" readonly></textarea>
+      </div>
+
+      <div style="margin-top:18px; display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+        <div>
+          <h4>Prepared by</h4>
+          <div class="signature-box" id="preparedBySignature">Name & Signature</div>
+          <div style="margin-top:6px;">Date: <span id="preparedByDate"></span></div>
+        </div>
+        <div>
+          <h4>Approved by</h4>
+          <div class="signature-box" id="approvedBySignature">Name & Signature</div>
+          <div style="margin-top:6px;">Date: <span id="approvedByDate"></span></div>
+        </div>
+      </div>
+
+      <div class="quote-actions quote-print-exclude">
+        <button id="addQuoteItemBtn" class="btn">Add item</button>
+        <button id="printQuoteBtn" class="btn-ghost">Print</button>
+        <button id="exportPdfBtn" class="btn-ghost">Export to PDF</button>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    Sprint Solar Pro Version <span id="appVersion">1.0.0</span>
+  </footer>
+
+  <script src="license.js"></script>
+<script src="app.js" defer></script>
+
+
+  <!-- Optional: small helper for browser testing only (lets you upload a logo and set companyLogoUrl to a data: URL) -->
+  <div id="logoUploadContainer" style="position:fixed;right:12px;bottom:12px;z-index:9999;">
+    <input id="logoFileInput" type="file" accept="image/*" style="display:none" />
+    <button id="logoUploadBtn" class="btn" title="Upload logo for browser testing">Upload Logo (browser test)</button>
+  </div>
+
+  <script>
+    // wire the small upload helper (browser-only convenience)
+    (function () {
+      const btn = document.getElementById('logoUploadBtn');
+      const input = document.getElementById('logoFileInput');
+      if (!btn || !input) return;
+      btn.addEventListener('click', () => input.click());
+      input.addEventListener('change', (e) => {
+        const f = e.target.files && e.target.files[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result;
+          const logoField = document.getElementById('companyLogoUrl');
+          if (logoField) logoField.value = dataUrl;
+          try { console.info('Logo set from uploaded file (data URL).'); } catch (e) {}
+        };
+        reader.readAsDataURL(f);
+      });
+    })();
+
+    // Sync quoteCurrency with system currencySelector
+    (function () {
+      const currencySelector = document.getElementById('currencySelector');
+      const quoteCurrency = document.getElementById('quoteCurrency');
+
+      function normalizeCurrencyInput(val) {
+        if (!val) return '';
+        if (/[^A-Za-z0-9\s]/.test(val)) return val.trim();
+        return val.trim().toUpperCase();
+      }
+
+      if (currencySelector && quoteCurrency) {
+        currencySelector.addEventListener('input', () => {
+          quoteCurrency.value = normalizeCurrencyInput(currencySelector.value) || quoteCurrency.value;
+        });
+      }
+
+      document.addEventListener('DOMContentLoaded', () => {
+        if (currencySelector && quoteCurrency) {
+          const normalized = normalizeCurrencyInput(currencySelector.value);
+          if (normalized) quoteCurrency.value = normalized;
+        }
+      });
+
+      if (quoteCurrency && currencySelector) {
+        quoteCurrency.addEventListener('blur', () => {
+          if (!quoteCurrency.value || !quoteCurrency.value.trim()) {
+            quoteCurrency.value = normalizeCurrencyInput(currencySelector.value) || '₦';
+          }
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

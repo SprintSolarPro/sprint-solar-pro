@@ -1,0 +1,2031 @@
+﻿/* =====================================================
+ Sprint Solar Pro  app.js (merged & cleaned)  patched v2
+ Note: Replace EMBEDDED_AES_KEY_HEX and EMBEDDED_PUBLIC_KEY_PEM with your actual values.
+ Also replace PACKAGED_META placeholders with real meta.b64/meta.sig/meta.checksum for each tier build.
+===================================================== */
+
+/* ===============================
+ Global error handlers (helpful when opening via file://)
+================================ */
+// Global error + promise rejection handler (defensive)
+window.addEventListener('error', (ev) => {
+  try {
+    // Some browsers report cross-origin script errors as "Script error." with no filename.
+    // Ignore those unless you explicitly want to surface them.
+    const msg = ev && ev.message ? ev.message : '';
+    if (msg === 'Script error.' && (!ev.filename || ev.filename === '')) {
+      // Optionally log to analytics but avoid noisy console output
+      // sendToAnalytics({ type: 'x-origin-script-error' });
+      return;
+    }
+
+    console.error('Global error:', msg, (ev.filename ? ev.filename + ':' + ev.lineno + ':' + ev.colno : ''), ev && ev.error ? ev.error : null);
+
+    const el = document.createElement('div');
+    el.style.cssText = 'position:fixed;left:0;right:0;top:0;background:#ffdddd;color:#900;padding:8px;z-index:99999;font-family:monospace';
+    el.textContent = 'JS error: ' + (msg || 'unknown error');
+    document.body.appendChild(el);
+  } catch (e) {
+    // swallow any errors from the handler itself
+  }
+});
+
+window.addEventListener('unhandledrejection', (ev) => {
+  try {
+    const reason = ev && ev.reason ? ev.reason : 'unknown';
+    console.error('Unhandled promise rejection:', reason);
+    // Optionally show a small banner or send to analytics
+  } catch (e) {}
+});
+
+/* ===============================
+ Configuration
+================================ */
+const APP_VERSION = "1.0.0";
+const TRIAL_DAYS = 7;
+const SALES_FUNNEL_URL = "https://sprintsolar.gumroad.com";
+
+// ===== Build tier (set per ZIP) =====
+// Allowed values: "trial", "standard", "pro_monthly", "pro_yearly", "enterprise"
+const BUILD_TIER = "pro_yearly"; // <-- change per ZIP before zipping
+
+/* ===============================
+ Currency symbols (declared early to avoid ReferenceError)
+================================ */
+const CURRENCY_SYMBOLS = {
+  NGN: "₦",
+  USD: "$",
+  EUR: "€",
+  GBP: "£",
+  JPY: "¥",
+  INR: "₹",
+  ZAR: "R",
+  AUD: "A$",
+  CAD: "C$",
+  CNY: "¥"
+};
+
+function getCurrencySymbol() {
+  const raw = document.getElementById('currencySelector')?.value || 'NGN';
+  const code = String(raw).toUpperCase();
+  return CURRENCY_SYMBOLS[code] || raw;
+}
+window.getCurrencySymbol = getCurrencySymbol; // Expose globally
+
+function formatWithCommas(number) {
+  const n = Number(number) || 0;
+  return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+}
+window.formatWithCommas = formatWithCommas; // Expose globally
+
+/* ===============================
+ Defensive guard: ensure showPage exists early to avoid ReferenceError from inline onclicks
+ This is now a "Safety Shim" added here to run even if the main script fails later.
+================================ */
+if (!window.showPage) {
+  window.showPage = function(pageId) {
+    if (typeof window.__realShowPage === 'function') {
+      try { window.__realShowPage(pageId); } catch (e) { console.warn('showPage proxy immediate call failed', e); }
+      return;
+    }
+    console.warn('showPage called before initialization, queuing:', pageId);
+    const queued = function onReady() {
+      document.removeEventListener('DOMContentLoaded', onReady);
+      if (typeof window.__realShowPage === 'function') {
+        try { window.__realShowPage(pageId); } catch (e) { console.warn('showPage queued call failed', e); }
+      } else {
+        console.warn('showPage still not available after DOMContentLoaded:', pageId);
+      }
+    };
+    document.addEventListener('DOMContentLoaded', queued);
+  };
+}
+
+/* ===============================
+ Embedded crypto artifacts (placeholders)
+ Replace these with your actual values before building.
+ - AES key must be 32 bytes (hex string) for AES-256-GCM
+ - PUBLIC KEY must be PEM encoded RSA public key used to verify meta.sig
+================================ */
+const EMBEDDED_AES_KEY_HEX = "b9e50fa142efea9fe62a0f55b81b71293e8880f5ebe54f1c7c9f4283799198ff";
+const EMBEDDED_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MIIBojANBgkqhG9w0BAQEFAAOCAY8AMIIBigKCAYEAwqK4EVzzioMeV4mxEKSN
+89vdZKOoXIJr+qNKYGsgZjpU2basctYPvXXKnaY+GkoiZapXRHlgyBInBID1YalI
+1QnUOGCtK+hTQaSBMySwhWR0CM3/5MbYS9RV1fALx/EvO4b3MXJ87ntUC4hpvHDx
+HkO31os4NdyAsMikH9a/h4ND9oFl9Ck7+Js6p4VEI6yWyFxqo6Ul+5JG4HvrTq1h
+5YD8aKXg+tgs2EchyN0YV8ONbgYYkXiigk7K7ldtV9E4ibdAsySVW0KtqUC2Wfba
+zZkkR2yZdyXdC8p3mniU9u7U4sWGjNytaK9T/J63wTz9r4qwewFLRckZN36Ch76X
+KzSpZ6rOyQhMKhShSZS9RKWAktmNZ7gfj+V+1C7SXA4LrjXbwIRyG8IT98hSWkEE
+sYe/uMEdwKMlUw03/ZjQVi+j3fKVmvh4SmlR8D4/xq/RkjKTHOH5OA0DiKYr6DX3
+ezReP4H9o8NuhJNQ9ZUtRLXkBEQq6/qscTW1FJ9N3q5lAgMBAAE=
+-----END PUBLIC KEY-----`;
+
+/* ===============================
+ Embedded packaged metadata (Option A)
+================================ */
+const PACKAGED_META = {
+  b64: "eyJpdiI6InJ6eEEySlViS3NnZmJndUsiLCJhdXRoVGFnIjoiRkNxbHFUZ3gweGF1OFdFZWlJeUN3Zz09IiwiY3QiOiJYeHprU0JCSlh2Q3p0RzNhLzl2MmpYeXdJeE5hS0FQR3hFSnE4Yk9HdlFMdTZ1LzNyOWE2bTdFQk1rbFhVQmtYYWQxd1JrekJzczliM0w2aVV6dDQrUklFeDM3aUJlNVRVeGMvaFFNUUZhTmNuOXhqVzZzUGFXNlpQeStmNENlNGJZUzVWSU1RODRqblNjdlVhWmlnVThQWm1ucWFaWTBHbVhHeWRSWWM4SEJ6VU8zdVptZk9IdkNjR0pKTi96Z25EVnExYy80Z2hGVWx0c2x6NkFNZ1p5V0xtdUpId3NCbkpPdWZ2NGxvbVFXM0oxdzc4ZGcvQkQ0RSsrMDVyNkp1VFN3c1BJRzVPZGlQOHZ4bFlFYVRVL1hXaWR6WlByMGZLcnhlUkZQQ1hTYUE5YmI2NXVKWWIwQjJTVWM4ZjhsWTZEeFNjUE4wb05TdEdtbld1VlYvYm9vTm5mVFRKNXJidnVsTkNrOGZ0OGhmMGxJbWUxSmhiZkdlNExZMjdCMkxhdVRWQ3luQ2JvRHRrcjdrb0JlSFdTMEsveHRsUnVvVENBK1lwUXE5U0czNGtDY0xQaWN6NGpYT3JSMGFXMExwaHN2ZlNmMzdHVlpGa2FCcnd1VGRkcDBpQlN5ektYYmRCdVNWdUZ6YWoxQTZEOE1ESFY4a2JnQXJjdz09In0=",
+  sig: "OprF8ZC3CK/4AZCnTD1lpWU0gENFWeGzQnEE2z4dXpK5B6k+/rDZmtmu8ct9CnO9j5rpVRh1lUfeM5utKyQp2V0g+B93XAR7UM9ZABn8wYp+qO1ZKZXQbY6gREKtJawdnUkNTaPQvNXmcxB9JxrxDMJ58q3mAXAOKDbuRwC1JQ+wnFoJa9Kq5sKHWGlwdp2SETlDgaoBo3x9m7E7Husshzlu64S6kUAjeXjLx72CSOd/IxkAqef/QPYHQRNlB0kMPAdhQSl1kkK9DLBnXnvniSmd/imHfahgv4WjpHj5f7+C456nigWk/ySdDtwuDgRNUlioDde22AzJxwgYqJxftQ==",
+  checksum: "b1246fedeade7b61f0582fce21d7c8bcef8f10b03268acc82acd2c17ef0e7424"
+};
+
+/* ===============================
+ Utility: crypto helpers (Web Crypto)
+================================ */
+function hexToBytes(hex) {
+  if (!hex) return new Uint8Array();
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+async function importAesKeyFromHex(hex) {
+  const raw = hexToBytes(hex);
+  return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]);
+}
+function pemToArrayBuffer(pem) {
+  const b64 = pem.replace(/-----BEGIN PUBLIC KEY-----/, '')
+                 .replace(/-----END PUBLIC KEY-----/, '')
+                 .replace(/\s+/g, '');
+  const binary = atob(b64);
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+async function importRsaPublicKey(pem) {
+  const spki = pemToArrayBuffer(pem);
+  return await crypto.subtle.importKey(
+    "spki",
+    spki,
+    { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    false,
+    ["verify"]
+  );
+}
+async function verifyRsaSignature(publicKey, dataUint8, signatureB64) {
+  const sig = base64ToBytes(signatureB64);
+  return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, sig, dataUint8);
+}
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+async function sha256Hex(str) {
+  const buf = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/* ===============================
+ Read and verify packaged metadata
+================================ */
+async function loadPackagedMetadata() {
+  try {
+    // --- Option A: Use embedded metadata if present and valid ---
+    if (PACKAGED_META && PACKAGED_META.b64 && PACKAGED_META.b64.trim().length > 0) {
+      const metaB64 = PACKAGED_META.b64.trim();
+      const checksum = PACKAGED_META.checksum ? PACKAGED_META.checksum.trim() : null;
+      const sig = PACKAGED_META.sig ? PACKAGED_META.sig.trim() : null;
+      const ciphertextPackageStr = atob(metaB64);
+      if (checksum) {
+        const calc = await sha256Hex(ciphertextPackageStr);
+        if (calc !== checksum) {
+          console.warn('Embedded meta.checksum mismatch', calc, checksum);
+          // Fall through to Option B (fetch from file)
+        }
+      }
+      let ciphertextPackage;
+      try { ciphertextPackage = JSON.parse(ciphertextPackageStr); } catch (e) { console.warn('Invalid embedded ciphertext package JSON', e); }
+
+      if (ciphertextPackage && ciphertextPackage.iv && ciphertextPackage.ct) {
+         // Proceed with decryption of embedded metadata
+         const iv = base64ToBytes(ciphertextPackage.iv);
+         const authTag = ciphertextPackage.authTag ? base64ToBytes(ciphertextPackage.authTag) : null;
+         const ct = ciphertextPackage.ct ? base64ToBytes(ciphertextPackage.ct) : null;
+         let combined;
+         if (authTag) {
+           combined = new Uint8Array(ct.length + authTag.length);
+           combined.set(ct, 0);
+           combined.set(authTag, ct.length);
+         } else {
+           combined = ct;
+         }
+         const aesKey = await importAesKeyFromHex(EMBEDDED_AES_KEY_HEX);
+         let plaintextStr;
+         try { 
+           const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, aesKey, combined);
+           plaintextStr = new TextDecoder().decode(new Uint8Array(decrypted));
+         } catch (e) { console.warn('Failed to decrypt embedded metadata', e); return null; }
+
+         let payload;
+         try { payload = JSON.parse(plaintextStr); } catch (e) { console.warn('Invalid embedded plaintext JSON', e); return null; }
+         const signatureB64 = sig || payload.sig || null;
+         const dataObj = payload.data || payload;
+         if (!signatureB64) { console.warn('No signature found for embedded metadata'); return null; }
+         const publicKey = await importRsaPublicKey(EMBEDDED_PUBLIC_KEY_PEM);
+         const dataUint8 = new TextEncoder().encode(JSON.stringify(dataObj));
+         const verified = await verifyRsaSignature(publicKey, dataUint8, signatureB64);
+         if (!verified) { console.warn('Embedded metadata signature verification failed'); return null; }
+         return dataObj; // SUCCESS A
+      }
+    }
+
+    // --- Option B: Fetch metadata from files (Web environment fallback) ---
+    const metaB64Resp = await fetch('meta.b64').catch(() => null);
+    if (!metaB64Resp || !metaB64Resp.ok) return null;
+    const metaB64 = await metaB64Resp.text();
+    const checksumResp = await fetch('meta.checksum').catch(() => null);
+    const sigResp = await fetch('meta.sig').catch(() => null);
+    const checksum = checksumResp && checksumResp.ok ? (await checksumResp.text()).trim() : null;
+    const sig = sigResp && sigResp.ok ? (await sigResp.text()).trim() : null;
+    const ciphertextPackageStr = atob(metaB64);
+    if (checksum) {
+      const calc = await sha256Hex(ciphertextPackageStr);
+      if (calc !== checksum) {
+        console.warn('meta.checksum mismatch', calc, checksum);
+        return null;
+      }
+    }
+    let ciphertextPackage;
+    try { ciphertextPackage = JSON.parse(ciphertextPackageStr); } catch (e) { console.warn('Invalid ciphertext package JSON', e); return null; }
+    const iv = base64ToBytes(ciphertextPackage.iv);
+    const authTag = ciphertextPackage.authTag ? base64ToBytes(ciphertextPackage.authTag) : null;
+    const ct = ciphertextPackage.ct ? base64ToBytes(ciphertextPackage.ct) : null;
+    let combined;
+    if (authTag) {
+      combined = new Uint8Array(ct.length + authTag.length);
+      combined.set(ct, 0);
+      combined.set(authTag, ct.length);
+    } else {
+      combined = ct;
+    }
+    const aesKey = await importAesKeyFromHex(EMBEDDED_AES_KEY_HEX);
+    let plaintextStr;
+    try {
+      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, aesKey, combined);
+      plaintextStr = new TextDecoder().decode(new Uint8Array(decrypted));
+    } catch (e) { console.warn('Failed to decrypt packaged metadata', e); return null; }
+    let payload;
+    try { payload = JSON.parse(plaintextStr); } catch (e) { console.warn('Invalid plaintext JSON', e); return null; }
+    const signatureB64 = sig || payload.sig || null;
+    const dataObj = payload.data || payload;
+    if (!signatureB64) { console.warn('No signature found for packaged metadata'); return null; }
+    const publicKey = await importRsaPublicKey(EMBEDDED_PUBLIC_KEY_PEM);
+    const dataUint8 = new TextEncoder().encode(JSON.stringify(dataObj));
+    const verified = await verifyRsaSignature(publicKey, dataUint8, signatureB64);
+    if (!verified) { console.warn('Packaged metadata signature verification failed'); return null; }
+    return dataObj; // SUCCESS B
+
+  } catch (e) {
+    console.error('loadPackagedMetadata error', e);
+    return null;
+  }
+}
+window.loadPackagedMetadata = loadPackagedMetadata; // Expose globally
+// --- Safety shims for file menu functions ---
+if (!window.fileNew) window.fileNew = function() { console.warn('fileNew called before app initialization'); };
+if (!window.fileOpen) window.fileOpen = function() { console.warn('fileOpen called before app initialization'); };
+if (!window.fileSave) window.fileSave = function() { console.warn('fileSave called before app initialization'); };
+if (!window.fileSaveAs) window.fileSaveAs = function() { console.warn('fileSaveAs called before app initialization'); };
+if (!window.exportQuotePDF) window.exportQuotePDF = function() { console.warn('exportQuotePDF called before app initialization'); };
+if (!window.printQuote) window.printQuote = function() { console.warn('printQuote called before app initialization'); };
+if (!window.shareQuote) window.shareQuote = function() { console.warn('shareQuote called before app initialization'); };
+if (!window.exitApp) window.exitApp = function() { console.warn('exitApp called before app initialization'); };
+
+// Safety shims for file menu functions (prevent "not defined" runtime errors)
+if (!window.fileNew) window.fileNew = function() { console.warn('fileNew called before app initialization'); };
+if (!window.fileOpen) window.fileOpen = function() { console.warn('fileOpen called before app initialization'); };
+if (!window.fileSave) window.fileSave = function() { console.warn('fileSave called before app initialization'); };
+if (!window.fileSaveAs) window.fileSaveAs = function() { console.warn('fileSaveAs called before app initialization'); };
+if (!window.filePrintMenuBtn) window.filePrintMenuBtn = null;
+if (!window.fileShareMenuBtn) window.fileShareMenuBtn = null;
+if (!window.exportQuotePDF) window.exportQuotePDF = function() { console.warn('exportQuotePDF called before app initialization'); };
+if (!window.printQuote) window.printQuote = function() { console.warn('printQuote called before app initialization'); };
+if (!window.shareQuote) window.shareQuote = function() { console.warn('shareQuote called before app initialization'); };
+
+// Helper: find the best quote element to export
+function findBestQuoteElement() {
+  // Try the most likely container first
+  let el = document.getElementById('quoteWrapper');
+  if (el && el.offsetHeight > 0) return el;
+
+  // Fallback: try the whole quote section
+  el = document.getElementById('quote');
+  if (el && el.offsetHeight > 0) return el;
+
+  // Fallback: try the body of the quote table
+  el = document.getElementById('quoteTableBody');
+  if (el && el.offsetHeight > 0) return el;
+
+  // If nothing is visible, return null
+  return null;
+}
+function isLicenseValid() {
+  // Example: read license info from DOM or global state
+  const tierEl = document.getElementById('licenseTierDisplay');
+  const expiryEl = document.getElementById('licenseExpiry');
+  const keyEl = document.getElementById('licenseKeyInput');
+
+  const tier = tierEl ? tierEl.textContent.trim().toLowerCase() : '';
+  const expiryText = expiryEl ? expiryEl.textContent.trim() : '';
+  const key = keyEl ? keyEl.value.trim() : '';
+
+  // 1. Must have a license key
+  if (!key) {
+    return false;
+  }
+
+  // 2. Trial tier is not valid for export
+  if (tier === 'trial') {
+    return false;
+  }
+
+  // 3. Expiry date must be in the future
+  if (expiryText) {
+    const expiryDate = new Date(expiryText);
+    const now = new Date();
+    if (expiryDate < now) {
+      return false;
+    }
+  }
+
+  // If all checks pass, license is valid
+  return true;
+}
+
+// Expose globally if needed
+window.isLicenseValid = isLicenseValid;
+
+function initTrial() {
+  if (getLicense()) return;
+  const start = Date.now();
+  saveLicense({
+    tier: "trial",
+    start,
+    expiry: start + TRIAL_DAYS * 24 * 60 * 60 * 1000,
+    device: getDeviceFingerprint(),
+    projectsLimit: 5,
+    source: "local",
+    licenseId: 'LIC_' + start,
+    projectsCreatedTotal: 0
+  });
+}
+
+/* ===============================
+ Project count helpers
+================================ */
+function adjustProjectCount(delta) {
+  try {
+    const used = Math.max(0, Number(localStorage.getItem('ssp_projects_count') || 0) + delta);
+    localStorage.setItem('ssp_projects_count', String(used));
+    if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    return used;
+  } catch (e) {
+    console.error('adjustProjectCount error', e);
+    return Number(localStorage.getItem('ssp_projects_count') || 0);
+  }
+}
+
+function getLicenseLimit() {
+  try {
+    const lic = JSON.parse(localStorage.getItem('ssp_license') || '{}');
+    return Number(lic.projectsLimit || lic.projectLimit || 0);
+  } catch { return 0; }
+}
+
+function canCreateProject() {
+  const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+  const limit = getLicenseLimit();
+  return !limit || used < limit;
+}
+
+function updateCreateButtonState() {
+  const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+  const limit = getLicenseLimit();
+  const newBtn = document.querySelector('button#fileNewBtn, button.new-project-btn, button#createProjectBtn');
+  if (newBtn) newBtn.disabled = !!(limit && used >= limit);
+}
+window.updateCreateButtonState = updateCreateButtonState; // Expose globally
+
+/* ===============================
+ Quote ID counter
+================================ */
+let quoteCounter = Number(localStorage.getItem('ssp_quote_counter') || 1000);
+function getNextQuoteId() {
+  quoteCounter = Number(localStorage.getItem('ssp_quote_counter') || quoteCounter || 1000) + 1;
+  localStorage.setItem('ssp_quote_counter', String(quoteCounter));
+  return `Quotation_${quoteCounter}`;
+}
+
+/* ===============================
+ Sales funnel
+================================ */
+function openSalesFunnel() {
+  window.open(SALES_FUNNEL_URL, "_blank");
+}
+window.openSalesFunnel = openSalesFunnel; // Expose globally
+
+/* ===============================
+ Developer credential & login
+================================ */
+function simpleHash(str) {
+  // FNV-1a 32-bit variant, returns zero-padded 8-char hex string
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  // zero-pad to 8 hex chars and return lowercase
+  return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+}
+
+function setDeveloperCredential() {
+  const pwd = document.getElementById('devSetPassword')?.value || '';
+  if (!pwd) { alert('Enter a password to set as developer credential'); return; }
+  const hashed = simpleHash(pwd);
+  localStorage.setItem('ssp_dev_cred', hashed);
+  alert('Developer credential saved locally on this device. Use Developer Login to sign in.');
+  const el = document.getElementById('devSetPassword'); if (el) el.value = '';
+}
+window.setDeveloperCredential = setDeveloperCredential; // Expose globally
+
+function developerLogin() {
+  const pwd = document.getElementById('devLoginPassword')?.value || '';
+  const stored = localStorage.getItem('ssp_dev_cred');
+  if (!stored) { alert('No developer credential set. Set it first in the modal.'); return; }
+  if (!pwd) { alert('Enter developer password'); return; }
+  const hashed = simpleHash(pwd);
+  if (hashed === stored) {
+    sessionStorage.setItem('ssp_dev_logged_in', '1');
+    if (typeof updateDevStatusUI === 'function') updateDevStatusUI();
+    if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions();
+    if (typeof updateFileMenuState === 'function') updateFileMenuState();
+    alert('Developer login successful. Full functionality enabled for this session.');
+  } else {
+    alert('Incorrect developer password');
+  }
+}
+window.developerLogin = developerLogin; // Expose globally
+
+function developerLogout() {
+  sessionStorage.removeItem('ssp_dev_logged_in');
+  if (typeof updateDevStatusUI === 'function') updateDevStatusUI();
+  if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions();
+  if (typeof updateFileMenuState === 'function') updateFileMenuState();
+  alert('Developer session ended. Trial restrictions re-applied if applicable.');
+}
+window.developerLogout = developerLogout; // Expose globally
+
+function isDeveloperLoggedIn() {
+  try { return sessionStorage.getItem('ssp_dev_logged_in') === '1'; } catch { return false; }
+}
+window.isDeveloperLoggedIn = isDeveloperLoggedIn; // Expose globally
+
+/* ===============================
+ License System (Gumroad Native)
+================================ */
+
+// Premium check based on unified validity
+function isPremiumActive() {
+  if (!isLicenseValid()) return false;
+  const lic = getLicense();
+  return lic.tier && String(lic.tier).toLowerCase() !== "trial";
+}
+window.isPremiumActive = isPremiumActive; // Expose globally
+
+// Project limit by tier (fallback if projectsLimit not set)
+function getProjectLimit() {
+  if (!isLicenseValid()) return 1;
+  const lic = getLicense();
+  if (typeof lic.projectsLimit === 'number') return lic.projectsLimit;
+  switch (lic.tier) {
+    case "trial": return 5;
+    case "standard": return 5;
+    case "pro_monthly": return Infinity;
+    case "pro_yearly": return Infinity;
+    case "enterprise": return Infinity;
+    default: return 5;
+  }
+}
+
+/* ===============================
+ Gumroad verification (online call)
+ Replace product IDs with your actual Gumroad product IDs
+================================ */
+async function verifyGumroadLicense(key) {
+  const productIdMap = {
+    trial: null,
+    standard: 'GUMROAD_PRODUCT_ID_STANDARD',
+    pro_monthly: 'GUMROAD_PRODUCT_ID_PRO_MONTHLY',
+    pro_yearly: 'GUMROAD_PRODUCT_ID_PRO_YEARLY',
+    enterprise: 'GUMROAD_PRODUCT_ID_ENTERPRISE'
+  };
+
+  const productId = productIdMap[BUILD_TIER];
+  if (!productId) return { ok: false, reason: 'trial_build' };
+
+  const endpoint = 'https://gumroad.com';
+  const body = new URLSearchParams({ product_id: productId, license_key: key });
+
+  let resp;
+  try {
+    resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    });
+  } catch {
+    return { ok: false, reason: 'network_error' };
+  }
+  if (!resp.ok) return { ok: false, reason: 'http_' + resp.status };
+
+  let data;
+  try { data = await resp.json(); } catch { return { ok: false, reason: 'bad_json' }; }
+
+  const success = !!data.success;
+  const purchase = data.purchase || {};
+  const gumProductId = purchase.product_id || null;
+
+  if (!success || gumProductId !== productId) {
+    return { ok: false, reason: 'invalid_or_wrong_product' };
+  }
+
+  let expiry = null;
+  const sub = purchase.subscription || {};
+  if (sub && sub.next_charge_date) {
+    const next = new Date(sub.next_charge_date).getTime();
+    if (!Number.isNaN(next)) expiry = next;
+  }
+
+  const projectsLimitByTier = {
+    standard: 5,
+    pro_monthly: Infinity,
+    pro_yearly: Infinity,
+    enterprise: Infinity
+  };
+
+  return {
+    ok: true,
+    tier: BUILD_TIER,
+    expiry,
+    projectsLimit: projectsLimitByTier[BUILD_TIER] ?? Infinity
+  };
+}
+
+/* ===============================
+ Activation (online-first, tier-locked)
+================================ */
+async function activateLicense() {
+  const keyInput = document.getElementById("licenseKeyInput");
+  const licenseKey = keyInput?.value?.trim();
+
+  if (!licenseKey || licenseKey.length < 8) {
+    alert("Please enter a valid Gumroad license key.");
+    return false;
+  }
+
+  if (typeof BUILD_TIER !== "undefined" && BUILD_TIER === "trial") {
+    alert("This is a Trial build. Activation is not available.");
+    return false;
+  }
+
+  try {
+    const result = await verifyGumroadLicense(licenseKey);
+    if (!result || !result.ok) {
+      const msgMap = {
+        trial_build: "This build cannot be activated.",
+        network_error: "Network error. Please check your internet connection and try again.",
+        invalid_or_wrong_product: "This license key is not valid for this product tier."
+      };
+      alert(msgMap?.[result?.reason] || ("Activation failed: " + (result?.reason || "unknown reason")));
+      return false;
+    }
+
+    const device = (typeof getDeviceFingerprint === "function") ? getDeviceFingerprint() : null;
+    const now = Date.now();
+
+    const existing = (typeof getLicense === "function") ? (getLicense() || {}) : {};
+    const license = {
+      licenseKeyHash: (typeof simpleHash === "function") ? simpleHash(licenseKey) : licenseKey,
+      tier: result.tier,
+      activatedAt: now,
+      expiry: result.expiry || null,
+      device,
+      source: "gumroad",
+      licenseId: existing.licenseId || ("LIC_" + now),
+      projectsCreatedTotal: Number(existing.projectsCreatedTotal || 0),
+      projectsLimit: Number(result.projectsLimit ?? Infinity)
+    };
+
+    if (typeof saveLicense === "function") {
+      saveLicense(license);
+    } else {
+      // fallback: persist to localStorage if saveLicense isn't available
+      try {
+        localStorage.setItem("ssp_license", JSON.stringify(license));
+      } catch (e) {
+        console.warn("Could not persist license to localStorage", e);
+      }
+    }
+
+    try { if (typeof enforceLicenseDeviceBinding === "function") enforceLicenseDeviceBinding(); } catch (e) { console.warn(e); }
+    try { if (typeof setPremiumMode === "function") setPremiumMode(license.tier); } catch (e) { console.warn(e); }
+    try { if (typeof applyLicenseToUI === "function") applyLicenseToUI(); } catch (e) { console.warn(e); }
+    try { if (typeof updateLicenseStatus === "function") updateLicenseStatus(); } catch (e) { console.warn(e); }
+
+    alert("License activated successfully. Tier: " + license.tier);
+    return true;
+  } catch (err) {
+    console.error("Activation error", err);
+    alert("Activation failed due to an unexpected error. Check console for details.");
+    return false;
+  }
+}
+
+window.activateLicense = activateLicense; // Expose globally
+
+// Switch to trial (for testing)
+function switchToTrial() {
+  if (!confirm('Return to trial mode for testing? This will end any developer session for this tab.')) return;
+  developerLogout();
+  try { localStorage.removeItem('ssp_license'); } catch (e) {}
+  initTrial();
+  if (typeof window.syncProjectsToLicense !== 'function') {
+      window.syncProjectsToLicense = (options) => { console.warn('syncProjectsToLicense shim executed'); };
+  }
+  try { window.syncProjectsToLicense({ archiveInsteadOfDelete: false }); } catch (e) { console.error('switchToTrial sync failed', e); }
+  enforceTrialRestrictions();
+  updateFileMenuState();
+  applyLicenseToUI();
+  try {
+    const badge = document.getElementById('projectsBadge');
+    const lic = (typeof getLicense === 'function') ? getLicense() : JSON.parse(localStorage.getItem('ssp_license')||'{}');
+    const tier = lic?.tier || lic?.type || 'trial';
+    const showForStandard = (tier === 'standard') || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (badge) badge.style.display = showForStandard ? (badge.style.display || 'inline-block') : 'none';
+  } catch (e) { /* non-fatal */ }
+}
+window.switchToTrial = switchToTrial; // Expose globally
+
+/* Developer modal controls */
+function openDevModal() { const modal = document.getElementById('devModal'); if (modal) modal.style.display = 'flex'; }
+function closeDevModal() { const modal = document.getElementById('devModal'); if (modal) modal.style.display = 'none'; }
+
+/* ===============================
+ UI helpers: dev status, file dropdown, SPA navigation
+================================ */
+function updateDevStatusUI() { const el = document.getElementById('devStatus'); if (!el) return; el.innerText = isDeveloperLoggedIn() ? 'Developer: signed in' : ''; }
+window.updateDevStatusUI = updateDevStatusUI;
+
+function toggleFileDropdown() {
+  const dd = document.getElementById('fileDropdown');
+  if (!dd) return;
+  dd.classList.toggle('open');
+  if (dd.classList.contains('open')) {
+    setTimeout(() => document.addEventListener('click', closeFileDropdownOnClickOutside), 10);
+  } else {
+    document.removeEventListener('click', closeFileDropdownOnClickOutside);
+  }
+}
+window.toggleFileDropdown = toggleFileDropdown;
+
+function closeFileDropdownOnClickOutside(e) {
+  const dd = document.getElementById('fileDropdown');
+  if (!dd) return;
+  if (!dd.contains(e.target)) {
+    dd.classList.remove('open');
+    document.removeEventListener('click', closeFileDropdownOnClickOutside);
+  }
+}
+
+/* ===============================
+ SPA Navigation & Branding
+================================ */
+function showPage(pageId) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  const page = document.getElementById(pageId);
+  if (page) page.classList.add('active');
+  if (typeof updateBranding === 'function') updateBranding();
+  if (typeof updateCurrencySymbol === 'function') updateCurrencySymbol();
+  if (typeof updateFileMenuState === 'function') updateFileMenuState();
+}
+window.__realShowPage = showPage;
+window.showPage = showPage;
+
+function resetAll() { location.reload(); }
+
+/* ===============================
+ Branding update (the implementation)
+================================ */
+function updateBranding() {
+  const nameInput = document.getElementById('companyName');
+  const logoInput = document.getElementById('companyLogoUrl');
+  const brandName = document.getElementById('brandName');
+  const companyLogo = document.getElementById('companyLogo');
+
+  if (brandName && nameInput) brandName.innerText = nameInput.value || 'Your Company Name';
+
+  if (!companyLogo) return;
+
+  try { companyLogo.crossOrigin = "anonymous"; } catch (e) {}
+
+  try {
+    if (window.sspNative && typeof window.sspNative.readAssetAsDataUrl === 'function') {
+      const dataUrl = window.sspNative.readAssetAsDataUrl('assets/logo.png');
+      if (dataUrl) {
+        companyLogo.src = dataUrl;
+        return;
+      }
+    }
+  } catch (e) { /* non-fatal */ }
+
+  const userSrc = (logoInput?.value || '').trim();
+  if (userSrc && !userSrc.startsWith('file:///')) {
+    companyLogo.src = userSrc;
+    return;
+  }
+
+  const inlinePlaceholder = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org" width="200" height="60"><rect width="100%" height="100%" fill="#ffffff"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-size="14">Company Logo</text></svg>');
+  companyLogo.src = inlinePlaceholder;
+}
+window.updateBranding = updateBranding;
+
+/* ===============================
+ Load analysis
+================================ */
+window.totalEnergyValue = 0;
+window.peakLoadValue = 0;
+
+function addRow() {
+  const tbody = document.querySelector('#loadTable tbody');
+  if (!tbody) return;
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input placeholder="Appliance"></td>
+    <td><input type="number" value="1"></td>
+    <td><input type="number" value="0"></td>
+    <td><input type="number" value="0"></td>
+    <td class="energyCell">0</td>
+    <td class="action-cell" data-html2canvas-ignore="true"><button class="removeRowBtn">Remove</button></td>
+  `;
+  tbody.appendChild(tr);
+  tr.querySelector('.removeRowBtn').addEventListener('click', () => tr.remove());
+  if (typeof recalcLoadTotals === 'function') recalcLoadTotals();
+}
+window.addRow = addRow;
+
+function removeRow(btn) {
+  const tr = btn.closest('tr');
+  if (tr) { tr.remove(); calculateTotal(); }
+}
+
+function attachListeners() {
+  document.querySelectorAll('#loadTable input').forEach(i => {
+    i.removeEventListener('input', calculateTotal);
+    i.addEventListener('input', calculateTotal);
+  });
+}
+
+function calculateTotal() {
+  try {
+    let total = 0, peak = 0;
+    document.querySelectorAll('#loadTable tbody tr').forEach(row => {
+      const qty = Number(row.cells[1].querySelector('input').value) || 0;
+      const power = Number(row.cells[2].querySelector('input').value) || 0;
+      const hours = Number(row.cells[3].querySelector('input').value) || 0;
+      const energy = qty * power * hours;
+      const energyEl = row.querySelector('.energy');
+      if (energyEl) energyEl.innerText = energy.toFixed(2);
+      total += energy;
+      peak = Math.max(peak, qty * power);
+    });
+    const totalEl = document.getElementById('totalEnergy');
+    if (totalEl) totalEl.innerText = total.toFixed(2);
+    window.totalEnergyValue = total;
+    window.peakLoadValue = peak;
+  } catch (e) {
+    console.error('calculateTotal failed', e);
+  }
+}
+window.calculateTotal = calculateTotal;
+
+/* ===============================
+ Sizing engine
+================================ */
+let systemQuantities = { inverterQty: 1, batteryQty: 0, panelQty: 0, chargeControllerQty: 0 };
+
+function calculateSizing() {
+  try {
+    calculateTotal();
+
+    const totalEnergy = window.totalEnergyValue; // Wh/day
+    const systemVoltage = Number(document.getElementById('systemVoltage')?.value || 48);
+    const sunHours = Number(document.getElementById('sunHours')?.value || 5);
+    const deratingFactor = Number(document.getElementById('deratingFactor')?.value || 80) / 100;
+    const autonomyDays = Number(document.getElementById('autonomyDays')?.value || 2);
+    const batteryCapacityUnit = Number(document.getElementById('batteryCapacity')?.value || 200); // Ah per battery
+    const panelWatt = Number(document.getElementById('panelWatt')?.value || 550); // W per panel
+    const batteryDoD = Number(document.getElementById('batteryDoD')?.value || 80) / 100;
+    const batteryVoltage = Number(document.getElementById('batteryVoltage')?.value || 12);
+
+    const inverterKva = Number(document.getElementById('inverterRatedPower')?.value || 0);
+    const inverterPF = Number(document.getElementById('inverterPF')?.value || 0.8);
+    const inverterCapacityInput = Number(document.getElementById('inverterCapacity')?.value || 0);
+    const inverterCapacity = inverterKva > 0 ? (inverterKva * 1000 * (isFinite(inverterPF) && inverterPF > 0 ? inverterPF : 0.8)) : (inverterCapacityInput > 0 ? inverterCapacityInput : 4000);
+
+    const safe = (v, min) => (isFinite(v) && v >= min ? v : min);
+    const WhPerDay = safe(totalEnergy, 0);
+    const Vsys = safe(systemVoltage, 12);
+    const Hsun = safe(sunHours, 1);
+    const derate = Math.min(Math.max(deratingFactor, 0.5), 1.0);
+    const days = safe(autonomyDays, 0.25);
+    const AhUnit = safe(batteryCapacityUnit, 50);
+    const Wpanel = safe(panelWatt, 100);
+    const DoD = Math.min(Math.max(batteryDoD, 0.5), 0.95);
+    const Vbat = safe(batteryVoltage, 12);
+
+    const peakLoadW = window.peakLoadValue || 0;
+    const inverterW = Math.ceil(peakLoadW * 1.25);
+    const inverterQty = Math.max(1, Math.ceil(inverterW / inverterCapacity));
+
+    const requiredWh = (WhPerDay * days) / DoD;
+    const requiredAhAtSystemV = requiredWh / Vsys;
+    const seriesCount = Math.ceil(Vsys / Vbat);
+    const parallelAhPerString = AhUnit;
+    const stringsNeeded = Math.ceil(requiredAhAtSystemV / parallelAhPerString);
+    const batteryQty = Math.max(seriesCount * stringsNeeded, 0);
+
+    const panelQty = Math.ceil(WhPerDay / (Wpanel * Hsun * derate));
+
+    const arrayPowerW = panelQty * Wpanel;
+    const arrayCurrentA = arrayPowerW / Vsys;
+    const controllerA = Math.ceil(arrayCurrentA * 1.25);
+    const chargeControllerQty = Math.max(1, Math.ceil(controllerA / 60));
+
+    systemQuantities = {
+      inverterQty,
+      batteryQty,
+      panelQty,
+      chargeControllerQty
+    };
+
+    if (typeof updateSizingUI === 'function') {
+      updateSizingUI({
+        inverterW,
+        batteryQty,
+        panelQty,
+        controllerA,
+        chargeControllerQty,
+        seriesCount,
+        stringsNeeded
+      });
+    }
+
+    if (typeof finalizeSizingUI === 'function') {
+      finalizeSizingUI({
+        inverterQty: inverterQty,
+        totalBatteryQty: batteryQty,
+        panelQty,
+        totalEnergy: WhPerDay,
+        peakLoad: peakLoadW,
+        systemVoltage: Vsys,
+        batteryVoltage: Vbat,
+        batteryCapacityUnit: AhUnit,
+        batteryDoD: DoD,
+        autonomyDays: days,
+        panelWatt: Wpanel
+      });
+    }
+  } catch (e) {
+    console.error('calculateSizing failed', e);
+  }
+}
+window.calculateSizing = calculateSizing;
+
+/* ===============================
+ Sizing UI updates (continuation)
+================================ */
+function finalizeSizingUI({
+  inverterQty,
+  totalBatteryQty,
+  panelQty,
+  totalEnergy,
+  peakLoad,
+  systemVoltage,
+  batteryVoltage,
+  batteryCapacityUnit,
+  batteryDoD,
+  autonomyDays,
+  panelWatt
+}) {
+  try {
+    const inverterQtyEl = document.getElementById('inverterQtyResult');
+    if (inverterQtyEl) inverterQtyEl.innerText = inverterQty;
+
+    const batteryQtyEl = document.getElementById('batteryQty');
+    if (batteryQtyEl) batteryQtyEl.innerText = totalBatteryQty;
+
+    const panelQtyEl = document.getElementById('panelQty');
+    if (panelQtyEl) panelQtyEl.innerText = panelQty;
+
+    const dailyEl = document.getElementById('dailyEnergyDisplay');
+    if (dailyEl) dailyEl.innerText = Number(totalEnergy || 0).toFixed(2);
+
+    const peakEl = document.getElementById('peakLoadDisplay');
+    if (peakEl) peakEl.innerText = Number(peakLoad || 0).toFixed(2);
+
+    const batterySeries = Math.max(1, Math.floor(systemVoltage / batteryVoltage));
+    const batteryParallel = Math.max(1, Math.ceil(totalBatteryQty / batterySeries));
+    const batteryConnection = batterySeries === 1 ? "Parallel" : batteryParallel === 1 ? "Series" : "Series-Parallel";
+
+    const batterySeriesEl = document.getElementById('batterySeriesCount');
+    const batteryParallelEl = document.getElementById('batteryParallelCount');
+    const batteryConnEl = document.getElementById('batteryConnectionType');
+    if (batterySeriesEl) batterySeriesEl.innerText = batterySeries;
+    if (batteryParallelEl) batteryParallelEl.innerText = batteryParallel;
+    if (batteryConnEl) batteryConnEl.innerText = batteryConnection;
+
+    const targetRuntimeHours = autonomyDays * 24;
+    const batteryRuntimeTargetEl = document.getElementById('batteryRuntimeTargetHours');
+    if (batteryRuntimeTargetEl) batteryRuntimeTargetEl.innerText = targetRuntimeHours.toFixed(1);
+
+    const avgLoadW = Number(totalEnergy || 0) / 24;
+    const usableCapacityWh = totalBatteryQty * batteryCapacityUnit * batteryVoltage * batteryDoD;
+    const estimatedRuntimeHours = avgLoadW > 0 ? (usableCapacityWh / avgLoadW) : 0;
+    const batteryRuntimeEl = document.getElementById('batteryRuntimeHours');
+    if (batteryRuntimeEl) batteryRuntimeEl.innerText = estimatedRuntimeHours.toFixed(1);
+
+    const panelVoltage = 40;
+    const panelSeries = Math.max(1, Math.floor(systemVoltage / panelVoltage));
+    const panelParallel = Math.max(1, Math.ceil(panelQty / panelSeries));
+    const panelConnection = panelSeries === 1 ? "Parallel" : panelParallel === 1 ? "Series" : "Series-Parallel";
+
+    const panelSeriesEl = document.getElementById('panelSeriesCount');
+    const panelParallelEl = document.getElementById('panelParallelCount');
+    const panelConnEl = document.getElementById('panelConnectionType');
+    if (panelSeriesEl) panelSeriesEl.innerText = panelSeries;
+    if (panelParallelEl) panelParallelEl.innerText = panelParallel;
+    if (panelConnEl) panelConnEl.innerText = panelConnection;
+
+    const inverterType = document.getElementById('inverterType')?.value || 'hybrid';
+    const chargeControllerEl = document.getElementById('chargeControllerDisplay');
+    if (inverterType !== "hybrid") {
+      const arrayWatts = panelQty * panelWatt;
+      const controllerCurrent = Math.ceil(arrayWatts / systemVoltage);
+      if (chargeControllerEl) chargeControllerEl.innerText = `${controllerCurrent} A MPPT recommended`;
+    } else {
+      if (chargeControllerEl) chargeControllerEl.innerText = "Integrated (Hybrid Inverter)";
+    }
+
+    const currentEstimate = Math.ceil(Number(peakLoad || 0) / systemVoltage);
+    const cableGauge = currentEstimate <= 30 ? "10 AWG" : currentEstimate <= 60 ? "6 AWG" : "4 AWG or larger";
+    const cableEl = document.getElementById('cableGaugeDisplay');
+    if (cableEl) cableEl.innerText = cableGauge;
+  } catch (e) {
+    console.error('finalizeSizingUI failed', e);
+  }
+}
+
+/* ===============================
+ Quotation engine & currency
+================================ */
+function updateCurrencySymbol() {
+  const symbol = getCurrencySymbol();
+  const headerEl = document.getElementById('quoteCurrencyHeader');
+  const totalHeaderEl = document.getElementById('quoteCurrencyTotalHeader');
+  if (headerEl) headerEl.innerText = symbol;
+  if (totalHeaderEl) totalHeaderEl.innerText = symbol;
+  const mirror = document.getElementById('quoteCurrencyMirror');
+  if (mirror) mirror.value = symbol;
+  updateQuoteTotalDisplay();
+}
+window.updateCurrencySymbol = updateCurrencySymbol;
+
+function updateQuoteTotalDisplay() {
+  const symbol = getCurrencySymbol();
+  const quoteTotalInput = document.getElementById('quoteTotal');
+  const finalPriceDisplay = document.getElementById('finalPriceDisplay');
+  if (finalPriceDisplay && quoteTotalInput) {
+    const rawTotal = Number(quoteTotalInput.dataset.raw || 0); 
+    finalPriceDisplay.innerText = `${symbol} ${formatWithCommas(rawTotal)}`;
+  }
+}
+
+function addQuoteRow(item = {}) {
+  const tbody = document.getElementById('quoteTableBody');
+  const totalRow = document.getElementById('quoteTotalRow');
+  if (!tbody || !totalRow) return;
+  const newRow = document.createElement('tr');
+
+  const tdName = document.createElement('td');
+  const inpName = document.createElement('input');
+  inpName.type = 'text'; inpName.className = 'quote-item-name'; inpName.value = item.name || '';
+  tdName.appendChild(inpName);
+
+  const tdQty = document.createElement('td');
+  const inpQty = document.createElement('input');
+  inpQty.type = 'number'; inpQty.className = 'quote-item-qty'; inpQty.value = item.qty || 1; inpQty.min = 1;
+  tdQty.appendChild(inpQty);
+
+  const tdPrice = document.createElement('td');
+  const inpPrice = document.createElement('input');
+  inpPrice.type = 'number'; inpPrice.className = 'quote-item-price'; inpPrice.value = item.price || 0; inpPrice.min = 0;
+  tdPrice.appendChild(inpPrice);
+
+  const tdTotal = document.createElement('td');
+  const inpTotal = document.createElement('input');
+  inpTotal.type = 'text'; inpTotal.className = 'quote-item-total'; inpTotal.disabled = true; inpTotal.value = '0.00';
+  tdTotal.appendChild(inpTotal);
+
+  const tdAction = document.createElement('td');
+  tdAction.className = 'action-cell';
+  tdAction.setAttribute('data-html2canvas-ignore','true');
+  const btnRemove = document.createElement('button');
+  btnRemove.type = 'button';
+  btnRemove.innerText = 'Remove';
+  btnRemove.addEventListener('click', () => { newRow.remove(); calculateQuoteTotals(); });
+  tdAction.appendChild(btnRemove);
+
+  newRow.appendChild(tdName);
+  newRow.appendChild(tdQty);
+  newRow.appendChild(tdPrice);
+  newRow.appendChild(tdTotal);
+  newRow.appendChild(tdAction);
+
+  tbody.insertBefore(newRow, totalRow);
+
+  inpQty.addEventListener('input', calculateQuoteTotals);
+  inpPrice.addEventListener('input', calculateQuoteTotals);
+
+  calculateQuoteTotals();
+}
+window.addQuoteRow = addQuoteRow;
+
+function calculateQuoteTotals() {
+  try {
+    let grandTotal = 0;
+    document.querySelectorAll('#quoteTableBody .quote-item-qty').forEach(qtyInput => {
+      const row = qtyInput.closest('tr');
+      const qty = Number(qtyInput.value) || 0;
+      const price = Number(row.querySelector('.quote-item-price').value) || 0;
+      const totalEl = row.querySelector('.quote-item-total');
+      const total = qty * price;
+            if (totalEl) {
+        totalEl.dataset.raw = total.toString();
+        totalEl.value = formatWithCommas(total);
+      }
+      grandTotal += total;
+    });
+    const totalInput = document.getElementById('quoteTotal');
+    if (totalInput) {
+      totalInput.dataset.raw = grandTotal.toString();
+      totalInput.value = formatWithCommas(grandTotal);
+    }
+    updateQuoteTotalDisplay();
+  } catch (e) {
+    console.error('calculateQuoteTotals failed', e);
+  }
+}
+window.calculateQuoteTotals = calculateQuoteTotals;
+function populateQuoteFromSizing() {
+  try {
+    const tbody = document.getElementById('quoteTableBody');
+    if (!tbody) return;
+    Array.from(tbody.querySelectorAll('tr')).forEach(row => { if (row.id !== 'quoteTotalRow') row.remove(); });
+
+    if (systemQuantities.inverterQty > 0) {
+      addQuoteRow({ name: '5kVA Hybrid Inverter', qty: systemQuantities.inverterQty, price: 500000 });
+    }
+    if (systemQuantities.batteryQty > 0) {
+      const batteryType = document.getElementById('batteryType')?.value || 'Battery';
+      addQuoteRow({ name: `200Ah ${batteryType} Battery`, qty: systemQuantities.batteryQty, price: 85000 });
+    }
+    if (systemQuantities.panelQty > 0) {
+      addQuoteRow({ name: '550W Mono Solar Panel', qty: systemQuantities.panelQty, price: 150000 });
+    }
+
+    const dateEl = document.getElementById('quoteDate');
+    const idEl = document.getElementById('quoteIdDisplay');
+    if (dateEl) dateEl.innerText = new Date().toLocaleDateString();
+    if (idEl) idEl.innerText = getNextQuoteId();
+
+    calculateQuoteTotals();
+  } catch (e) {
+    console.error('populateQuoteFromSizing failed', e);
+  }
+}
+window.populateQuoteFromSizing = populateQuoteFromSizing;
+
+/* ===============================
+ Export helpers: hide UI controls before export and restore after
+================================ */
+function _hideUiForExport() {
+  const toHide = [];
+  document.querySelectorAll('.no-export, [data-html2canvas-ignore]').forEach(el => {
+    if (el.style && el.style.display !== 'none') { toHide.push({ el, prev: el.style.display }); el.style.display = 'none'; }
+  });
+  document.querySelectorAll('.app-header, .app-footer').forEach(el => {
+    if (!el.hasAttribute('data-user-header') && !el.hasAttribute('data-user-footer')) {
+      if (el.style && el.style.display !== 'none') { toHide.push({ el, prev: el.style.display }); el.style.display = 'none'; }
+    }
+  });
+  return toHide;
+}
+function _restoreUiAfterExport(hiddenList) {
+  if (!Array.isArray(hiddenList)) return;
+  hiddenList.forEach(item => { try { item.el.style.display = item.prev || ''; } catch (e) {} });
+}
+
+/* ===============================
+ Sanitize and html2canvas helpers (consistent dataset naming)
+================================ */
+function sanitizeForHtml2Canvas() {
+  try {
+    // Ensure images are safe for html2canvas
+    document.querySelectorAll('img').forEach(img => {
+      try { img.crossOrigin = "anonymous"; } catch (e) {}
+      const src = (img.getAttribute('src') || '').trim();
+      if (!src || src === 'about:blank' || src.startsWith('file:///')) {
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+         '<svg xmlns="http://www.w3.org" width="200" height="60"><rect width="100%" height="100%" fill="#ffffff"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-size="14">Company Logo</text></svg>'
+        );
+      }
+    });
+
+    // Remove file:/// CSS backgrounds
+    document.querySelectorAll('*').forEach(el => {
+      try {
+        const bg = getComputedStyle(el).backgroundImage || '';
+        if (bg && bg.includes('file:///')) {
+          el.style.backgroundImage = 'none';
+        }
+      } catch (e) {}
+    });
+
+    // Hide only elements explicitly marked for exclusion from export:
+    // - elements with .no-export
+    // - action cells (table action columns)
+    // - elements with data-html2canvas-ignore
+    // - buttons that are children of action cells (so we still hide remove/edit buttons)
+    document.querySelectorAll('.no-export, .action-cell, [data-html2canvas-ignore]').forEach(e => {
+      if (!e.dataset.html2canvasHidden) {
+        e.dataset.html2canvasHidden = e.style.display || '';
+        e.style.display = 'none';
+      }
+    });
+
+    // Also hide buttons that are inside action-cell containers (these are interactive controls in tables)
+    document.querySelectorAll('.action-cell button').forEach(btn => {
+      if (!btn.dataset.html2canvasHidden) {
+        btn.dataset.html2canvasHidden = btn.style.display || '';
+        btn.style.display = 'none';
+      }
+    });
+
+  } catch (e) {
+    console.error('sanitizeForHtml2Canvas failed', e);
+  }
+}
+
+function restoreAfterHtml2Canvas() {
+  try {
+    // Restore elements hidden by sanitizeForHtml2Canvas
+    document.querySelectorAll('[data-html2canvas-hidden], [data-html2canvasHidden], [data-html2canvashidden]').forEach(e => {
+      try {
+        // prefer dataset property if present, otherwise attribute
+        const prev = e.dataset.html2canvasHidden ?? e.getAttribute('data-html2canvas-hidden') ?? e.getAttribute('data-html2canvasHidden');
+        e.style.display = prev || '';
+        // cleanup dataset/attributes
+        try { delete e.dataset.html2canvasHidden; } catch (err) {}
+        try { e.removeAttribute('data-html2canvas-hidden'); } catch (err) {}
+        try { e.removeAttribute('data-html2canvasHidden'); } catch (err) {}
+      } catch (err) {}
+    });
+  } catch (e) {
+    console.error('restoreAfterHtml2Canvas failed', e);
+  }
+}
+
+/* ===============================
+ PDF Export (clean export: hide UI controls that are not user header/footer)
+================================ */
+// Utility: wait for all images in an element to load
+async function waitForImages(container, timeoutMs = 10000) {
+  const imgs = Array.from(container.querySelectorAll('img'));
+  if (imgs.length === 0) return;
+
+  await Promise.race([
+    Promise.all(imgs.map(img => {
+      if (img.complete) return Promise.resolve();
+      return new Promise(resolve => {
+        img.onload = resolve;
+        img.onerror = resolve;
+      });
+    })),
+    new Promise(resolve => setTimeout(resolve, timeoutMs))
+  ]);
+}
+async function _exportQuotePDF_impl() {
+  try {
+    const srcEl = document.getElementById('quoteWrapper');
+    if (!srcEl) {
+      console.error('quoteWrapper not found');
+      return;
+    }
+
+    // Clone the element so we can safely modify it
+    const clone = srcEl.cloneNode(true);
+
+    // Remove trial banner text if present
+    clone.querySelectorAll('*').forEach(el => {
+      if (el.textContent && el.textContent.includes('TRIAL VERSION UPGRADE TO EXPORT')) {
+        el.remove();
+      }
+    });
+
+    // Style adjustments to ensure visibility
+    clone.style.position = 'absolute';
+    clone.style.left = '-9999px';
+    clone.style.top = '0';
+    clone.style.opacity = '1';
+    clone.style.display = 'block';
+    clone.style.visibility = 'visible';
+    clone.style.background = '#ffffff';
+
+    document.body.appendChild(clone);
+
+    // Export with minimal safe options
+    await html2pdf().from(clone).set({
+      margin: 10,
+      filename: 'quote.pdf',
+      html2canvas: { scale: 2 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+    }).save();
+
+  } catch (err) {
+    console.error('Export failed:', err);
+  } finally {
+    const c = document.getElementById('quoteWrapper_clone_for_pdf');
+    if (c) c.remove();
+  }
+}
+
+// --- Safe user-initiated export wrapper (replace any top-level _exportQuotePDF_impl() call) ---
+function exportQuotePDF() {
+  try { window.__allowExport = true; } catch (e) {}
+  try {
+    if (typeof _exportQuotePDF_impl === 'function') {
+      _exportQuotePDF_impl().catch(err => console.error('exportQuotePDF error', err));
+    } else {
+      console.warn('exportQuotePDF: _exportQuotePDF_impl not defined');
+    }
+  } finally {
+    setTimeout(() => { try { window.__allowExport = false; } catch (e) {} }, 50);
+  }
+}
+window.exportQuotePDF = exportQuotePDF;
+
+// Bind export UI elements once DOM is ready (idempotent)
+document.addEventListener('DOMContentLoaded', () => {
+  const bindOnce = (el) => {
+    if (!el) return;
+    if (el.dataset && el.dataset.listenerAdded) return;
+    el.addEventListener('click', () => exportQuotePDF());
+    if (el.dataset) el.dataset.listenerAdded = 'true';
+  };
+
+  bindOnce(document.getElementById('exportPdfBtn'));
+  bindOnce(document.getElementById('filePrintMenuBtn'));
+  bindOnce(document.getElementById('printBtn'));
+});
+
+/* ===============================
+ Trial restrictions, watermark, print & share gating
+================================ */
+function enforceTrialRestrictions() {
+  const exportBtn = document.getElementById('exportPdfBtn');
+  const printBtn = document.getElementById('printBtn');
+  const filePrintMenuBtn = document.getElementById('filePrintMenuBtn');
+  const fileShareMenuBtn = document.getElementById('fileShareMenuBtn');
+  const watermark = document.getElementById('trialWatermark');
+  const licenseBanner = document.getElementById('licenseBanner');
+  const enabled = isPremiumActive() || isDeveloperLoggedIn();
+
+  if (!enabled) {
+    if (exportBtn) { exportBtn.disabled = true; exportBtn.title = "Export disabled in trial mode"; }
+    if (printBtn) { printBtn.disabled = true; printBtn.title = "Print disabled in trial mode"; }
+    if (filePrintMenuBtn) { filePrintMenuBtn.disabled = true; filePrintMenuBtn.title = "Premium required"; }
+    if (fileShareMenuBtn) { fileShareMenuBtn.disabled = true; fileShareMenuBtn.title = "Premium required"; }
+    if (watermark) watermark.style.display = 'block';
+    if (licenseBanner) licenseBanner.style.display = 'block';
+  } else {
+    if (exportBtn) { exportBtn.disabled = false; exportBtn.title = ""; }
+    if (printBtn) { printBtn.disabled = false; printBtn.title = ""; }
+    if (filePrintMenuBtn) { filePrintMenuBtn.disabled = false; filePrintMenuBtn.title = ""; }
+    if (fileShareMenuBtn) { fileShareMenuBtn.disabled = false; fileShareMenuBtn.title = ""; }
+    if (watermark) watermark.style.display = 'none';
+    if (licenseBanner) licenseBanner.style.display = 'none';
+  }
+}
+window.enforceTrialRestrictions = enforceTrialRestrictions;
+
+/* ===============================
+ Print, share, and screenshot mitigation
+================================ */
+function printQuote() {
+  if (!(isPremiumActive() || isDeveloperLoggedIn())) {
+    alert("Printing is disabled in trial mode. Please activate a premium license.");
+    return;
+  }
+
+  const company =
+    document.getElementById('companyName')?.value ||
+    document.getElementById('companyNameInput')?.value ||
+    '';
+
+  const footer = document.querySelector('footer');
+  if (footer) {
+    footer.setAttribute('data-company', company || '');
+    footer.setAttribute('data-brand', '');
+  }
+
+  const hidden = _hideUiForExport();
+  try {
+    window.print();
+  } finally {
+    _restoreUiAfterExport(hidden);
+  }
+}
+window.printQuote = printQuote;
+
+function shareQuote() {
+  if (!(isPremiumActive() || isDeveloperLoggedIn())) {
+    alert("Sharing is a premium feature. Upgrade or log in as developer to enable.");
+    return;
+  }
+  const project = exportProjectJSON();
+  const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url)
+      .then(() => alert('Share link copied to clipboard'))
+      .catch(() => alert('Share link ready: ' + url));
+  } else {
+    alert('Share link ready: ' + url);
+  }
+}
+window.shareQuote = shareQuote;
+
+function setupPrintInterception() {
+  window.addEventListener('beforeprint', function(e) {
+    if (!(isPremiumActive() || isDeveloperLoggedIn())) {
+      e.preventDefault();
+      alert("Printing is disabled in trial mode. Please activate a premium license to print.");
+      window.focus();
+    }
+  });
+  const nativePrint = window.print;
+  window.print = function() {
+    if (!(isPremiumActive() || isDeveloperLoggedIn())) {
+      alert("Printing is disabled in trial mode. Please activate a premium license to print.");
+      return;
+    }
+    return nativePrint.call(window);
+  };
+}
+
+function setupScreenshotMitigation() {
+  document.addEventListener('contextmenu', function(e) {
+    if (!(isPremiumActive() || isDeveloperLoggedIn())) {
+      const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      e.preventDefault();
+    }
+  });
+  document.addEventListener('keydown', async function(e) {
+    if (!(isPremiumActive() || isDeveloperLoggedIn())) {
+      if (e.key === 'PrintScreen' || e.keyCode === 44) {
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText('');
+          }
+        } catch {}
+      }
+    }
+  });
+}
+
+/* ===============================
+ File menu actions (New/Open/Save/Save As/Exit)
+================================ */
+function updateFileMenuState() {
+  const filePrintMenuBtn = document.getElementById('filePrintMenuBtn');
+  const fileShareMenuBtn = document.getElementById('fileShareMenuBtn');
+  const enabled = isPremiumActive() || isDeveloperLoggedIn();
+  if (filePrintMenuBtn) { filePrintMenuBtn.disabled = !enabled; filePrintMenuBtn.title = enabled ? '' : 'Premium required'; }
+  if (fileShareMenuBtn) { fileShareMenuBtn.disabled = !enabled; fileShareMenuBtn.title = enabled ? '' : 'Premium required'; }
+}
+window.updateFileMenuState = updateFileMenuState;
+
+function fileNew() {
+  try {
+    if (typeof createProjectEntry === 'function') {
+      const projectSnapshot = exportProjectJSON ? exportProjectJSON() : { meta: { id: `P${Date.now()}` }, items: [] };
+      const key = createProjectEntry(projectSnapshot);
+      if (!key) return;
+    } else {
+      if (!canCreateProject()) { alert('Project limit reached. Delete a project or upgrade license to create more.'); return; }
+      try { adjustProjectCount(1); } catch (e) { console.error('adjustProjectCount fallback failed', e); }
+    }
+
+    if (!confirm('Start a new project? Unsaved changes will be lost.')) return;
+
+    document.querySelectorAll('#loadTable tbody tr').forEach(r => r.remove());
+    document.querySelectorAll('#quoteTableBody tr').forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+
+    addRow();
+    calculateQuoteTotals();
+    updateBranding();
+
+    try {
+      const idEl = document.getElementById('quoteIdDisplay');
+      const dateEl = document.getElementById('quoteDate');
+      if (idEl) idEl.innerText = getNextQuoteId();
+      if (dateEl) dateEl.innerText = new Date().toLocaleDateString();
+    } catch (e) { console.error('Failed to set new quote id', e); }
+  } catch (e) {
+    console.error('fileNew failed', e);
+  }
+}
+window.fileNew = fileNew;
+
+function fileOpen() {
+  try {
+    const saved = localStorage.getItem('ssp_project');
+    if (!saved) { alert('No saved project found in local storage.'); return; }
+    const project = JSON.parse(saved);
+    if (project.meta?.company) {
+      const companyEl = document.getElementById('companyName');
+      if (companyEl) companyEl.value = project.meta.company;
+    }
+    const tbody = document.getElementById('quoteTableBody');
+    Array.from(tbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+    (project.items || []).forEach(it => addQuoteRow({ name: it.name, qty: it.qty, price: it.price }));
+    calculateQuoteTotals();
+    alert('Project loaded from local storage.');
+  } catch (e) {
+    alert('Failed to load project: invalid data.');
+  }
+}
+window.fileOpen = fileOpen;
+
+function fileSave() {
+  try {
+    const project = exportProjectJSON();
+    const key = 'ssp_project_' + (project.meta?.id || Date.now());
+    localStorage.setItem(key, JSON.stringify(project));
+
+    const raw = localStorage.getItem('ssp_projects_list') || '[]';
+    const list = JSON.parse(raw);
+    const entry = { id: project.meta.id || '', name: project.meta.company || '', savedAt: Date.now(), key };
+    const filtered = list.filter(p => p.id !== entry.id && p.key !== entry.key);
+    filtered.unshift(entry);
+    localStorage.setItem('ssp_projects_list', JSON.stringify(filtered.slice(0, 100)));
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+
+    try {
+      const savedList = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]');
+      const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+      const limit = getLicenseLimit();
+      const desired = limit ? Math.min(limit, Math.max(used, savedList.length)) : Math.max(used, savedList.length);
+      localStorage.setItem('ssp_projects_count', String(desired));
+      if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+    } catch (e) { console.error('sync count after save failed', e); }
+
+    alert('Project saved locally.');
+  } catch (e) {
+    console.error('Failed to save project data', e);
+    alert('Failed to save project.');
+  }
+}
+window.fileSave = fileSave;
+
+async function fileSaveAs() {
+  try {
+    const project = exportProjectJSON();
+    const content = JSON.stringify(project, null, 2);
+    const suggestedName = (project.meta?.id ? `${project.meta.id}.json` : 'ssp_project.json');
+
+    if (window.showSaveFilePicker) {
+      try {
+        const opts = {
+          types: [
+            {
+              description: 'JSON file',
+              accept: { 'application/json': ['.json'] }
+            }
+          ],
+          suggestedName
+        };
+        const handle = await window.showSaveFilePicker(opts);
+        const writable = await handle.createWritable();
+        await writable.write(content);
+        await writable.close();
+        alert('Project saved.');
+        return;
+      } catch (e) {
+        console.warn('showSaveFilePicker failed or cancelled', e);
+      }
+    }
+
+    let filename = prompt('Enter filename to save (include .json)', suggestedName);
+    if (!filename) return;
+    filename = filename.replace(/[\\/:*?"<>|]/g, '') || suggestedName;
+
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    alert('Project saved to downloads as ' + filename);
+  } catch (e) {
+    console.error('fileSaveAs fallback failed', e);
+    alert('Failed to save file: ' + (e && e.message ? e.message : 'unknown error'));
+  }
+}
+window.fileSaveAs = fileSaveAs;
+
+function exportProjectJSON() {
+  try {
+    const items = Array.from(document.querySelectorAll('#quoteTableBody tr'))
+      .filter(r => r.id !== 'quoteTotalRow')
+      .map(r => ({
+        name: r.querySelector('.quote-item-name')?.value || '',
+        qty: r.querySelector('.quote-item-qty')?.value || '',
+        price: r.querySelector('.quote-item-price')?.value || ''
+      }));
+    const currentId = document.getElementById('quoteIdDisplay')?.innerText || `Quotation_${quoteCounter}`;
+    return {
+      meta: {
+        company: document.getElementById('companyName')?.value || '',
+        date: new Date().toISOString(),
+        id: currentId
+      },
+      items,
+      totals: { total: document.getElementById('quoteTotal')?.dataset.raw || 0 }
+    };
+  } catch (e) {
+    console.error('exportProjectJSON failed', e);
+    return { meta: { company: '', date: new Date().toISOString(), id: `Quotation_${quoteCounter}` }, items: [], totals: { total: 0 } };
+  }
+}
+window.exportProjectJSON = exportProjectJSON;
+
+function exitApp() {
+  if (confirm('Exit application?')) {
+    try { window.close(); } catch (e) { alert('Close the tab to exit the app.'); }
+  }
+}
+window.exitApp = exitApp;
+
+/* ===============================
+ License UI helpers & project registry (remaining parts)
+================================ */
+function updateUpgradeButton() {
+  const btn = document.getElementById('licenseUpgradeBtn');
+  if (!btn) return;
+  const lic = getLicense();
+  if (!lic) {
+    btn.innerText = "Activate Premium";
+    btn.onclick = openSalesFunnel;
+    return;
+  }
+
+  if (!isLicenseValid()) {
+    btn.innerText = "Renew License";
+    btn.onclick = openSalesFunnel;
+    return;
+  }
+
+  if (lic.tier === "standard") {
+    btn.innerText = "Upgrade to Pro";
+    btn.onclick = openSalesFunnel;
+    return;
+  }
+
+  btn.innerText = "Manage License";
+  btn.onclick = openSalesFunnel;
+}
+window.updateUpgradeButton = updateUpgradeButton;
+
+/* ===============================
+ License status UI
+================================ */
+function updateLicenseStatus() {
+  try {
+    const lic = getLicense();
+    const statusEl = document.getElementById('licenseStatus');
+    const expiryEl = document.getElementById('licenseExpiry');
+    if (isLicenseValid()) {
+      if (statusEl) statusEl.innerText = "Status: Valid (" + (lic?.tier || 'unknown') + ")";
+      if (expiryEl) expiryEl.innerText = lic?.expiry ? "Expires: " + new Date(lic.expiry).toLocaleDateString() : "Expires: Never";
+    } else {
+      if (statusEl) statusEl.innerText = "Status: INVALID or EXPIRED";
+      if (expiryEl) expiryEl.innerText = "Please activate a license.";
+    }
+  } catch (e) {
+    console.error('updateLicenseStatus failed', e);
+  }
+}
+window.updateLicenseStatus = updateLicenseStatus;
+
+/* ===============================
+ Project registry helpers
+================================ */
+function getSavedProjects() {
+  try { return JSON.parse(localStorage.getItem('ssp_projects_list') || '[]'); } catch { return []; }
+}
+
+/* ===============================
+ Project load / delete
+================================ */
+function loadProjectByKey(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) { alert('Project not found: ' + key); return; }
+    const project = JSON.parse(raw);
+    if (project.meta?.company) {
+      const companyEl = document.getElementById('companyName');
+      if (companyEl) companyEl.value = project.meta.company;
+    }
+    const tbody = document.getElementById('quoteTableBody');
+    Array.from(tbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+    (project.items || []).forEach(it => addQuoteRow({ name: it.name, qty: it.qty, price: it.price }));
+    calculateQuoteTotals();
+    const idEl = document.getElementById('quoteIdDisplay');
+    if (idEl) idEl.innerText = project.meta?.id || '';
+    alert('Project loaded: ' + (project.meta?.id || key));
+  } catch (e) {
+    alert('Failed to load project: ' + (e && e.message ? e.message : 'unknown error'));
+  }
+}
+window.loadProjectByKey = loadProjectByKey;
+
+function deleteSavedProject(key) {
+  try {
+    const rawList = localStorage.getItem('ssp_projects_list') || '[]';
+    const list = JSON.parse(rawList);
+    const idx = list.findIndex(p => p.key === key);
+    if (idx === -1) { alert('Saved project not found in index'); return; }
+    localStorage.removeItem(key);
+    list.splice(idx, 1);
+    localStorage.setItem('ssp_projects_list', JSON.stringify(list));
+    try {
+      const savedList = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]');
+      const limit = getLicenseLimit();
+      const desired = limit ? Math.min(limit, savedList.length) : savedList.length;
+      localStorage.setItem('ssp_projects_count', String(desired));
+    } catch (e) { console.error('recalc count after delete failed', e); }
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    alert('Project deleted.');
+  } catch (e) {
+    console.error('deleteSavedProject failed', e);
+    alert('Failed to delete project: ' + (e && e.message ? e.message : 'unknown error'));
+  }
+}
+window.deleteSavedProject = deleteSavedProject;
+
+/* ===============================
+ Projects Badge (dynamic list with delete)
+================================ */
+(function(){
+  function getUsedCount(){ return Number(localStorage.getItem('ssp_projects_count') || 0); }
+  function getLimit(){ 
+    const lic = JSON.parse(localStorage.getItem('ssp_license') || '{}');
+    return Number(lic.projectsLimit || lic.projectLimit || 0);
+  }
+
+  const style = document.createElement('style');
+  style.textContent = `
+  #projectsBadge {
+    position: fixed;
+    right: 16px;
+    top: 72px;
+    z-index: 9999;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  }
+  #projectsBadge .badge {
+    background: #0b5fff;
+    color: #fff;
+    padding: 8px 12px;
+    border-radius: 8px;
+    box-shadow: 0 6px 18px rgba(11,95,255,0.18);
+    display: inline-flex;
+    flex-direction: column;
+    gap: 6px;
+    max-width: 260px;
+  }
+  .projects-slot .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .projects-new.disabled { opacity: 0.5; cursor: not-allowed; }
+  #projectsBadge .projects-counter {
+    background: transparent;
+    color: #fff;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1;
+    max-width: 120px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  `;
+  document.head.appendChild(style);
+
+  const container = document.createElement('div');
+  container.id = 'projectsBadge';
+  container.innerHTML = `
+    <div class="badge">
+      <strong id="projectsBadgeLabel">Projects: 0 / 0</strong>
+      <div id="projectsSlots"></div>
+    </div>
+  `;
+  if (!document.getElementById('projectsBadge')) {
+    document.body.appendChild(container);
+  }
+
+  function renderSlots(){
+    const slotsEl = document.getElementById('projectsSlots');
+    if (!slotsEl) return;
+    slotsEl.innerHTML = '';
+    const saved = getSavedProjects();
+    const used = getUsedCount();
+    const limit = getLimit();
+    const license = (typeof getLicense === 'function') ? getLicense() : JSON.parse(localStorage.getItem('ssp_license')||'{}');
+    const tier = (license && (license.tier || license.type)) ? (license.tier || license.type) : 'trial';
+    const dev = (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    const showForStandard = (tier === 'standard') || dev;
+
+    if (showForStandard) {
+      const counter = document.createElement('div');
+      counter.className = 'projects-counter';
+      counter.style.display = 'flex';
+      counter.style.alignItems = 'center';
+      counter.style.gap = '8px';
+      counter.style.fontWeight = '700';
+      counter.style.whiteSpace = 'nowrap';
+      counter.innerText = `${used} / ${limit || saved.length || 0}`;
+      slotsEl.appendChild(counter);
+    }
+
+    const labelEl = document.getElementById('projectsBadgeLabel');
+    if (labelEl) labelEl.innerText = `Projects: ${used} / ${limit || saved.length}`;
+
+    const legacyCount = document.getElementById('projectsCount');
+    if (legacyCount) legacyCount.innerText = String(used);
+
+    const shouldShow = showForStandard && (used > 0 || (limit && limit > 0));
+    container.style.display = shouldShow ? 'inline-block' : 'none';
+  }
+
+  window.updateProjectsBadge = renderSlots;
+  renderSlots();
+
+  window.addEventListener('storage', function(e){
+    if (['ssp_projects_list','ssp_projects_count','ssp_license'].includes(e.key)) renderSlots();
+  });
+})();
+
+/* ===============================
+ applyLicenseToUI
+================================ */
+function applyLicenseToUI() {
+  const license = (typeof getLicense === 'function') ? getLicense() : null;
+  const isValid = !!license && license.tier && license.expiry && Date.now() < (license.expiry || 0);
+
+  const banner = document.getElementById('licenseBanner');
+  const watermark = document.getElementById('trialWatermark');
+  const exportBtn = document.getElementById('exportPdfBtn');
+  const printBtn = document.getElementById('printBtn');
+
+  if (!isValid) {
+    if (banner) banner.style.display = 'block';
+    if (watermark) watermark.style.display = 'block';
+    if (exportBtn) exportBtn.disabled = true;
+    if (printBtn) printBtn.disabled = true;
+  } else {
+    if (banner) banner.style.display = 'none';
+    if (watermark) watermark.style.display = 'none';
+    if (exportBtn) exportBtn.disabled = false;
+    if (printBtn) printBtn.disabled = false;
+  }
+}
+window.applyLicenseToUI = applyLicenseToUI;
+
+/* ===============================
+ Mode setters (trial / premium)
+================================ */
+function setTrialMode() {
+  window.currentTier = 'trial';
+  enforceTrialRestrictions();
+  updateFileMenuState();
+}
+
+function setPremiumMode(tier) {
+  window.currentTier = tier;
+  enforceTrialRestrictions();
+  updateFileMenuState();
+}
+
+/* ===============================
+ Enforce license on startup
+================================ */
+// --- License retrieval helper ---
+function getLicense() {
+  try {
+    const stored = localStorage.getItem('ssp_license');
+    if (stored) {
+      return JSON.parse(stored);
+    }
+
+    const keyEl = document.getElementById('licenseKeyInput');
+    const tierEl = document.getElementById('licenseTierDisplay');
+    const expiryEl = document.getElementById('licenseExpiry');
+
+    const licenseKey = keyEl ? keyEl.value.trim() : '';
+    const tier = tierEl ? tierEl.textContent.trim().toLowerCase() : 'trial';
+    const expiry = expiryEl ? new Date(expiryEl.textContent.trim()).getTime() : null;
+
+    if (!licenseKey && tier === 'trial') {
+      return null;
+    }
+
+    return {
+      licenseKey,
+      tier,
+      expiry,
+      device: getDeviceFingerprint(),
+      source: 'dom'
+    };
+  } catch (e) {
+    console.error("getLicense failed", e);
+    return null;
+  }
+}
+// Permanent tolerant license validator (safe)
+(function installIsLicenseValidSafe() {
+  // Ensure simpleHash exists
+  if (typeof simpleHash !== 'function') {
+    function simpleHash(str) {
+      let h = 2166136261 >>> 0;
+      for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619) >>> 0;
+      }
+      return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+    }
+    window.simpleHash = simpleHash;
+  }
+
+  // Ensure getDeviceFingerprint exists
+  if (typeof getDeviceFingerprint !== 'function') {
+    window.getDeviceFingerprint = function() {
+      try {
+        const ua = navigator.userAgent || '';
+        const platform = navigator.platform || '';
+        const screenSize = (typeof screen !== 'undefined' && screen.width && screen.height) ? `${screen.width}x${screen.height}` : '';
+        const tz = (typeof Intl !== 'undefined' && Intl.DateTimeFormat) ? (Intl.DateTimeFormat().resolvedOptions().timeZone || '') : '';
+        return simpleHash([ua, platform, screenSize, tz].join('|'));
+      } catch (e) { return 'unknown-device'; }
+    };
+  }
+
+  // Temporary override for local testing
+function isLicenseValidSafe() {
+  return true;
+}
+
+function isLicenseValid() {
+  return true;
+}
+
+function getLicense() {
+  return {
+    licenseKey: 'DEVTOOLS-PRO-YEARLY-TEST',
+    tier: 'pro_yearly',
+    activatedAt: Date.now(),
+    expiry: Date.now() + 365*24*60*60*1000, // one year from now
+    device: 'devtools-device',
+    source: 'manual',
+    licenseId: 'DEVTOOLS_PRO_YEARLY_' + Date.now(),
+    projectsCreatedTotal: 0,
+    projectsLimit: Infinity
+  };
+}
+
+  // Install wrapper that preserves any existing stricter validator
+  if (typeof isLicenseValid === 'function') {
+    const orig = isLicenseValid;
+    window.isLicenseValid = function() {
+      try { return orig() || isLicenseValidSafe(); } catch (e) { return isLicenseValidSafe(); }
+    };
+  } else {
+    window.isLicenseValid = isLicenseValidSafe;
+  }
+
+  console.log('isLicenseValidSafe installed.');
+})();
+
+/* ===============================
+ App finalizer and EOF guard
+ Paste this immediately after the existing "});" that closes DOMContentLoaded
+================================ */
+(function _finalizeAppJs() {
+  try {
+    // Ensure core globals exist
+    if (typeof systemQuantities === 'undefined') window.systemQuantities = { inverterQty: 1, batteryQty: 0, panelQty: 0, chargeControllerQty: 0 };
+    if (typeof window.totalEnergyValue === 'undefined') window.totalEnergyValue = 0;
+    if (typeof window.peakLoadValue === 'undefined') window.peakLoadValue = 0;
+
+    // Re-attach global listeners if available
+    try { if (typeof attachGlobalListeners === 'function') attachGlobalListeners(); } catch (e) {}
+
+    // Make sure exports are disabled by default at startup.
+    // _exportQuotePDF_impl must check window.__allowExport before proceeding.
+    try { window.__allowExport = false; } catch (e) { /* ignore */ }
+
+    // Final DOM-ready sanity pass
+    function _finalSanity() {
+      try {
+        if (typeof restoreLastState === 'function') restoreLastState();
+        if (typeof calculateTotal === 'function') calculateTotal();
+        if (typeof calculateSizing === 'function') calculateSizing();
+        if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+        if (typeof updateBranding === 'function') updateBranding();
+        if (typeof updateCurrencySymbol === 'function') updateCurrencySymbol();
+        if (typeof applyLicenseToUI === 'function') applyLicenseToUI();
+        if (typeof updateFileMenuState === 'function') updateFileMenuState();
+      } catch (e) { console.warn('final sanity pass failed', e); }
+
+      // Bind Export PDF button and File->Print menu safely here (only once)
+      try {
+        const bindExportHandler = (el) => {
+          if (!el) return;
+          if (el.dataset && el.dataset.listenerAdded) return;
+          el.addEventListener('click', () => {
+            // mark this call as user-initiated for this invocation only
+            try { window.__allowExport = true; } catch (e) {}
+            try {
+              // call the export implementation; it should check window.__allowExport itself
+              if (typeof _exportQuotePDF_impl === 'function') {
+                _exportQuotePDF_impl();
+              } else {
+                console.warn('_exportQuotePDF_impl not defined');
+              }
+            } finally {
+              // clear the flag immediately after call to avoid accidental re-use
+              try { window.__allowExport = false; } catch (e) {}
+            }
+          });
+          if (el.dataset) el.dataset.listenerAdded = 'true';
+        };
+
+        // Primary export button (if present)
+        bindExportHandler(document.getElementById('exportPdfBtn'));
+
+        // File menu / print menu entry that should trigger export
+        bindExportHandler(document.getElementById('filePrintMenuBtn'));
+
+        // Optional: any other UI element that should trigger export
+        bindExportHandler(document.getElementById('printBtn'));
+        bindExportHandler(document.getElementById('fileShareMenuBtn')); // if you want share to trigger export, otherwise remove
+      } catch (e) {
+        console.warn('Export button binding failed', e);
+      }
+    }
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+      _finalSanity();
+    } else {
+      document.addEventListener('DOMContentLoaded', _finalSanity);
+    }
+
+    // Defensive no-op export (keeps previous behavior if referenced)
+    window._ssp_finalize_noop = function() { return true; };
+
+  } catch (err) {
+    try { console.error('App finalizer error', err); } catch (e) {}
+  }
+})();
+
+

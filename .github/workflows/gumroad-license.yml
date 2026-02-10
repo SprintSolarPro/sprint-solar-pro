@@ -1,0 +1,51 @@
+name: Gumroad License Issuance
+
+on:
+  schedule:
+    # run every 10 minutes (adjust as needed)
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
+
+jobs:
+  issue-licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          cd scripts
+          npm ci || npm install
+
+      - name: Run license generator
+        env:
+          GUMROAD_API_KEY: ${{ secrets.GUMROAD_API_KEY }}
+          PRIVATE_KEY_PEM: ${{ secrets.PRIVATE_KEY_PEM }}
+          SMTP_HOST: smtp.gmail.com
+          SMTP_PORT: 587
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          GIT_COMMITTER_NAME: 'License Bot'
+          GIT_COMMITTER_EMAIL: 'licenses@yourdomain.com'
+        run: |
+          node scripts/generate-and-send-license.js
+
+      - name: Commit issued licenses (if any)
+        run: |
+          git config user.name "$GIT_COMMITTER_NAME"
+          git config user.email "$GIT_COMMITTER_EMAIL"
+          git add issued-licenses || true
+          if ! git diff --cached --quiet; then
+            git commit -m "Add issued licenses $(date -u +"%Y-%m-%dT%H:%M:%SZ")" || true
+            git push origin HEAD:${{ github.ref_name }}
+          else
+            echo "No new licenses to commit."
+          fi

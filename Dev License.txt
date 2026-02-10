@@ -1,0 +1,4 @@
+document.getElementById('licenseKey').value = 'DEV-TEST-0001';
+document.getElementById('licenseEmail').value = 'you@example.com';
+document.getElementById('licensePhone').value = '+2348000000000';
+activateLicense();

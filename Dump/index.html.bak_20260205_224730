@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Sprint Solar Pro — Skeleton</title>
+  <style>
+    html,body{height:100%;margin:0;font-family:system-ui,Segoe UI,Roboto,Arial;background:#f4f4f4;color:#111}
+    header{background:#333;color:#fff;padding:12px;text-align:center}
+    main{padding:18px;max-width:1100px;margin:18px auto}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Sprint Solar Pro</h1>
+    <p style="margin:6px 0 0;font-size:14px;opacity:.9">Loading skeleton…</p>
+  </header>
+
+  <main>
+    <section id="home" class="page active">
+      <h2>Home</h2>
+      <p>App skeleton loaded. Replace with full UI when ready.</p>
+    </section>
+  </main>
+
+  <footer style="text-align:center;padding:12px;font-size:13px;color:#666">
+    Sprint Solar Pro Version <span id="appVersion">1.0.0</span>
+  </footer>
+
+  <!-- External libraries (optional) -->
+  <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script> -->
+
+  <!-- Safe edge tabs metadata (inert JSON, read by app.js) -->
+  <script id="edgeTabsData" type="application/json">
+  []
+  </script>
+
+  <!-- App script -->
+  <script src="app.js" defer></script>
+</body>
+</html>

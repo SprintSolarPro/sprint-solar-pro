@@ -1,0 +1,488 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sprint Solar Pro</title>
+<link rel="icon" type="image/x-icon" href="assets/favico.ico">
+<style>
+/* Global */
+body { font-family: sans-serif; margin:0; padding:0; background:#f4f4f4; color:#111; }
+header { background:#333; color:#fff; padding:16px; text-align:center; }
+header h1 { margin:0; font-size:24px; }
+header p { margin:4px 0 0; font-size:14px; }
+nav { background:#444; padding:8px; display:flex; gap:8px; align-items:center; justify-content:center; flex-wrap:wrap; }
+nav button { background:#2c3e50; color:#fff; border:none; padding:8px 12px; border-radius:6px; cursor:pointer; }
+nav button:hover { background:#34495e; }
+.dropdown { position:relative; display:inline-block; }
+.dropdown .label { background:#2c3e50; color:#fff; padding:8px 12px; border-radius:6px; cursor:pointer; }
+.dropdown-content { display:none; position:absolute; right:0; background:#fff; min-width:220px; box-shadow:0 8px 20px rgba(0,0,0,0.15); z-index:10000; border-radius:6px; overflow:hidden; color:#000; }
+.dropdown:hover .dropdown-content { display:block; }
+.dropdown-content button { display:block; width:100%; text-align:left; padding:10px 12px; border:none; background:transparent; cursor:pointer; color:#000; }
+.dropdown-content button:hover { background:#f0f0f0; color:#000; }
+main { padding:18px; max-width:1200px; margin:18px auto; }
+.page { display:none; background:#fff; padding:18px; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.06); }
+.page.active { display:block; }
+table { width:100%; border-collapse:collapse; margin-top:10px; }
+th, td { border:1px solid #000; padding:8px; text-align:left; }
+input, select, textarea { width:100%; padding:8px; box-sizing:border-box; margin:6px 0; }
+.quote-wrapper { max-width:900px; margin:0 auto; position:relative; border:1px solid #000; padding:20px; background:#fff; }
+#trialWatermark { display:none; position:absolute; top:45%; left:50%; transform:translate(-50%,-50%) rotate(-25deg); font-size:48px; color:rgba(200,0,0,0.12); pointer-events:none; z-index:9999; white-space:nowrap; }
+#licenseBanner { display:none; padding:8px 12px; background:#fff3cd; color:#856404; border:1px solid #ffeeba; margin:12px 0; border-radius:6px; }
+#devModal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); align-items:center; justify-content:center; z-index:2000; }
+#devModal .modal { background:#fff; padding:16px; border-radius:8px; width:360px; box-shadow:0 8px 30px rgba(0,0,0,0.25); }
+#devModal input { margin-bottom:8px; width:100%; }
+.no-print { }
+#quoteTotalRow input { color:#111 !important; font-weight:bold; }
+
+/* ===== PDF / PRINT STABILITY FIX ===== */
+.quote-wrapper {
+  box-sizing: border-box;
+}
+
+.quote-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.quote-table th,
+.quote-table td {
+  border: 1px solid #000;
+  padding: 8px;
+  vertical-align: top;
+}
+
+textarea,
+input {
+  overflow: hidden;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
+
+  .quote-wrapper {
+    box-shadow: none !important;
+    border: none !important;
+  }
+}
+
+@media print { .no-print, .action-cell, button { display:none !important; } table, tr { page-break-inside:avoid !important; } }
+#projectsBadge { display:none; margin-right:12px; background:#ffcc00; color:#111; padding:6px 10px; border-radius:6px; font-weight:700; box-shadow:0 2px 6px rgba(0,0,0,0.12); }
+#projectsBadge span { margin-left:6px; font-weight:900; }
+.btn-upgrade { background:#0b5fff; color:#fff; border:none; padding:8px 12px; border-radius:6px; cursor:pointer; }
+.btn-upgrade:hover { opacity:0.95; }
+/* Small helper for Verify Packaged Tier */
+#packagedNote { margin-top:8px; font-size:13px; color:#555; background:#f8f9fb; padding:8px; border-radius:6px; border:1px solid #e6eefc; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Sprint Solar Pro</h1>
+    <p>Professional Solar Sizing & Quotation Tool</p>
+  </div>
+  <div id="devStatus" style="font-size:13px;color:#ffd700;"></div>
+</header>
+
+<nav>
+  <button id="navHomeBtn">Home</button>
+  <button id="navSystemBtn">System Input</button>
+  <button id="navLoadBtn">Load</button>
+  <button id="navSizingBtn">Sizing</button>
+  <button id="navQuoteBtn">Quotation</button>
+  <button id="navLicenseBtn">License Status</button>
+
+  <div class="dropdown" id="fileDropdown" aria-haspopup="true" aria-expanded="false">
+    <div class="label">Options</div>
+    <div class="dropdown-content" role="menu" aria-label="File options">
+      <button id="fileNewBtn" role="menuitem">New</button>
+      <button id="fileOpenBtn" role="menuitem">Open</button>
+      <button id="fileSaveBtn" role="menuitem">Save</button>
+      <button id="fileSaveAsBtn" role="menuitem">Save As</button>
+      <button id="filePrintMenuBtn" role="menuitem">Print</button>
+      <button id="fileShareMenuBtn" role="menuitem">Share</button>
+      <button id="fileExitBtn" role="menuitem">Exit</button>
+    </div>
+  </div>
+
+  <button id="devLoginBtn">Developer Login</button>
+  <button id="switchToTrialBtn">Return to Trial</button>
+</nav>
+
+<main>
+  <div id="licenseBanner">Trial mode active. Exporting and printing are disabled. <button id="upgradeBtn">Upgrade</button></div>
+
+  <!-- HOME -->
+  <section id="home" class="page active">
+    <h2>Welcome</h2>
+    <p>Accurate solar system sizing and quotation software for installers.</p>
+  </section>
+
+  <!-- LICENSE / ACTIVATE -->
+  <section id="license" class="page">
+    <h2>Activate License</h2>
+
+    <p id="licenseStatus">Status: [checking]</p>
+    <p id="licenseExpiry">Expires: [date]</p>
+    <p id="licenseTier">Tier: trial</p>
+
+    <!-- Add upgrade button here -->
+    <div id="licenseControls">
+      <button id="licenseUpgradeBtn" class="btn-upgrade">Renew / Upgrade</button>
+    </div>
+
+    <label>Product Purchased</label>
+    <div id="licenseTierDisplay" style="padding:8px;border:1px solid #e6eefc;border-radius:6px;background:#f8f9fb;">
+      <strong>Build Tier:</strong> <span id="licenseTier">trial</span>
+    </div>
+
+    <label>Gumroad License Key</label>
+    <input id="licenseKeyInput" placeholder="Paste Gumroad license key" />
+
+    <div style="margin-top:8px;">
+      <button id="activateLicenseBtn">Activate License</button>
+      <button id="verifyPackagedBtn" style="margin-left:8px;">Verify Packaged Tier</button>
+    </div>
+
+    <div id="packagedNote">
+      <strong>Note:</strong> This build supports embedded packaged metadata. If you purchased a tier-specific ZIP, the app will read the embedded metadata automatically when you open the app. Use "Verify Packaged Tier" to re-check. If activation does not occur, contact support with your order details.
+    </div>
+  </section>
+
+  <!-- SYSTEM -->
+  <section id="system" class="page">
+    <h2>System Parameters</h2>
+
+    <h3>Inverter</h3>
+    <label>Type</label>
+    <select id="inverterType">
+      <option value="hybrid">Hybrid</option>
+      <option value="offgrid">Off-Grid</option>
+    </select>
+    <label>Efficiency (%)</label>
+    <input type="number" id="inverterEfficiency" value="95">
+    <label>Rated power (kVA)</label>
+    <input type="number" id="inverterRatedPower" value="5">
+
+    <h3>Battery</h3>
+    <label>Battery type</label>
+    <input type="text" id="batteryType" placeholder="Battery type (AGM, LiFePO4, Li-ion, etc)">
+    <label>Capacity (Ah)</label>
+    <input type="number" id="batteryCapacity" value="200">
+    <label>Battery voltage (V)</label>
+    <input type="number" id="batteryVoltage" value="12">
+    <label>Depth of discharge (%)</label>
+    <input type="number" id="batteryDoD" value="80">
+    <label>Days of autonomy</label>
+    <input type="number" id="autonomyDays" value="2" step="0.01">
+
+    <h3>Solar panel</h3>
+    <label>Wattage (W)</label>
+    <input type="number" id="panelWatt" value="550">
+
+    <h3>Site/environment</h3>
+    <label>Hours of sunshine</label>
+    <input type="number" id="sunHours" value="5">
+    <label>Derating factor (%)</label>
+    <input type="number" id="deratingFactor" value="80">
+
+    <h3>System & Branding</h3>
+    <label>System voltage (V)</label>
+    <select id="systemVoltage">
+      <option value="24">24V</option>
+      <option value="48" selected>48V</option>
+    </select>
+
+    <label>Currency</label>
+    <input list="currencyList" id="currencySelector" value="NGN">
+    <datalist id="currencyList">
+      <option value="NGN">₦ - Nigerian Naira</option>
+      <option value="USD">$ - US Dollar</option>
+      <option value="EUR">€ - Euro</option>
+      <option value="GBP">£ - British Pound</option>
+      <option value="JPY">¥ - Japanese Yen</option>
+      <option value="INR">₹ - Indian Rupee</option>
+      <option value="ZAR">R - South African Rand</option>
+      <option value="AUD">A$ - Australian Dollar</option>
+      <option value="CAD">C$ - Canadian Dollar</option>
+      <option value="CNY">¥ - Chinese Yuan</option>
+    </datalist>
+
+    <label>Company name</label>
+    <input type="text" id="companyName" value="Your Company Name">
+    <label>Company logo URL</label>
+    <input type="text" id="companyLogoUrl" placeholder="https://example.com/logo.png">
+  </section>
+
+  <!-- LOAD -->
+  <section id="load" class="page">
+    <h2>Load Analysis</h2>
+    <table id="loadTable">
+      <thead>
+        <tr>
+          <th>Appliance</th>
+          <th>Qty</th>
+          <th>Power (W)</th>
+          <th>Hours</th>
+          <th>Energy (Wh)</th>
+          <th class="action-cell" data-html2canvas-ignore="true">Action</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div style="margin-top:8px;">
+      <button id="addApplianceBtn">Add appliance</button>
+    </div>
+    <h3>Total daily energy: <span id="totalEnergy">0</span> Wh</h3>
+    <div style="margin-top:8px;">
+      <button id="calcSizingBtn">Calculate sizing & proceed</button>
+    </div>
+  </section>
+
+  <!-- SIZING -->
+  <section id="sizing" class="page">
+    <h2>System Sizing Results</h2>
+    <p>Estimated daily energy: <strong id="dailyEnergyDisplay">0</strong> Wh</p>
+    <p>Peak load: <strong id="peakLoadDisplay">0</strong> W</p>
+    <p>Inverter qty: <strong id="inverterQtyResult">0</strong></p>
+
+    <h3>Battery bank</h3>
+    <p>Batteries qty: <strong id="batteryQty">0</strong></p>
+    <p>Battery connection: <strong id="batteryConnectionType">-</strong></p>
+    <p>Series batteries: <strong id="batterySeriesCount">0</strong></p>
+    <p>Parallel batteries: <strong id="batteryParallelCount">0</strong></p>
+    <p>Estimated runtime (battery capacity): <strong id="batteryRuntimeHours">0.0</strong> hours</p>
+    <p>Target runtime (from autonomy): <strong id="batteryRuntimeTargetHours">0.0</strong> hours</p>
+
+    <h3>Solar array</h3>
+    <p>Panels qty: <strong id="panelQty">0</strong></p>
+    <p>Panel connection: <strong id="panelConnectionType">-</strong></p>
+    <p>Series panels: <strong id="panelSeriesCount">0</strong></p>
+    <p>Parallel panels: <strong id="panelParallelCount">0</strong></p>
+
+    <h3>Balance of system</h3>
+    <p>Charge controller: <strong id="chargeControllerDisplay">-</strong></p>
+    <p>Cable gauge recommendation: <strong id="cableGaugeDisplay">-</strong></p>
+
+    <div style="margin-top:8px;">
+      <button id="toQuoteBtn">Proceed to quotation</button>
+    </div>
+  </section>
+
+  <!-- QUOTE -->
+  <section id="quote" class="page">
+    <div class="quote-wrapper" id="quoteWrapper">
+      <div id="trialWatermark">TRIAL VERSION UPGRADE TO EXPORT</div>
+
+      <div class="quote-brand" style="display:flex; align-items:center; gap:16px; margin-bottom:12px; page-break-inside:avoid;">
+
+        <img id="companyLogo" src="" alt="Company Logo" style="max-height:80px; max-width:160px; object-fit:contain;">
+        <div><h2 id="brandName">Your Company Name</h2></div>
+      </div>
+
+      <div style="background:#2c3e50; color:#fff; padding:12px 16px; border-radius:6px; margin:16px 0; display:flex; justify-content:space-between; align-items:center;">
+        <div>Quotation</div>
+        <div><span>Date: <span id="quoteDate"></span></span>&nbsp;|&nbsp;<span>ID: <span id="quoteIdDisplay"></span></span></div>
+      </div>
+
+      <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px 24px; margin:16px 0;">
+        <div><label>Customer name</label><input type="text" id="customerName" placeholder="Enter customer name"></div>
+        <div><label>Customer contact</label><input type="text" id="customerContact" placeholder="Enter phone/email"></div>
+        <div><label>Customer address</label><input type="text" id="customerAddress" placeholder="Enter address"></div>
+        <div><label>Currency</label><input type="text" id="quoteCurrencyMirror" disabled></div>
+      </div>
+
+      <table class="quote-table">
+        <thead style="background:#2c3e50; color:#fff;">
+          <tr>
+            <th>Item</th>
+            <th>Qty</th>
+            <th>Unit price (<span id="quoteCurrencyHeader"></span>)</th>
+            <th>Total (<span id="quoteCurrencyTotalHeader"></span>)</th>
+            <th class="action-cell" data-html2canvas-ignore="true">Action</th>
+          </tr>
+        </thead>
+        <tbody id="quoteTableBody">
+        <tr id="quoteTotalRow" style="font-weight:bold; background:#f4f6f8;">
+
+            <td colspan="3"><strong>Total</strong></td>
+            <td><input id="quoteTotal" disabled value="0.00"></td>
+            <td class="action-cell" data-html2canvas-ignore="true"></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div id="amountInWordsContainer" style="margin-top:12px;">
+        <label>Amount in words:</label>
+        <textarea id="amountInWords" rows="3" placeholder="Enter the total amount in words here (e.g., Five Million Naira Only)"></textarea>
+      </div>
+
+      <div style="display:flex; justify-content:flex-end; gap:12px; margin-top:16px; font-weight:600; color:#27ae60;">
+        <span>Final price:</span><span id="finalPriceDisplay"> 0.00</span>
+      </div>
+
+      <div id="signatureSection" style="margin-top:40px;">
+        <table style="width:100%; margin-top:20px;">
+          <tr>
+            <td style="width:50%; text-align:left;">
+              <strong>Prepared by :</strong><br><br>___________________________<br>Name & Signature<br>Date:
+            </td>
+            <td style="width:50%; text-align:right;">
+              <strong>Approved by :</strong><br><br>___________________________<br>Name & Signature<br>Date:
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div style="margin-top:12px; display:flex; gap:8px;">
+      <button id="exportPdfBtn">Export to PDF</button>
+      <button id="printBtn">Print</button>
+      <button id="shareBtn">Share</button>
+    </div>
+  </section>
+
+  <!-- Developer modal -->
+  <div id="devModal" aria-hidden="true">
+    <div class="modal">
+      <h3>Developer Tools</h3>
+      <label>Set developer password</label>
+      <input id="devSetPassword" type="password" placeholder="New developer password">
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button id="devSetBtn">Set</button>
+        <button id="devCloseBtn">Close</button>
+      </div>
+      <hr>
+      <label>Developer login</label>
+      <input id="devLoginPassword" type="password" placeholder="Developer password">
+      <div style="display:flex; gap:8px; margin-top:8px;">
+        <button id="devLoginSubmitBtn">Login</button>
+        <button id="devLogoutBtn">Logout</button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<footer style="text-align:center; padding:12px; font-size:13px; color:#666;">
+  Sprint Solar Pro Version <span id="appVersion">1.0.0</span>
+</footer>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<!-- App script -->
+<script src="app.js" defer></script>
+<script>
+/* ===== SAFETY GUARD FOR EXE / WEBVIEW ===== */
+window.addEventListener("error", function (e) {
+  console.error("Runtime error:", e.message);
+});
+</script>
+
+<!-- Minimal UI wiring to call functions defined in app.js -->
+<script defer>
+document.addEventListener('DOMContentLoaded', () => {
+  // Navigation
+  document.getElementById('navHomeBtn')?.addEventListener('click', () => showPage('home'));
+  document.getElementById('navSystemBtn')?.addEventListener('click', () => showPage('system'));
+  document.getElementById('navLoadBtn')?.addEventListener('click', () => showPage('load'));
+  document.getElementById('navSizingBtn')?.addEventListener('click', () => showPage('sizing'));
+  document.getElementById('navQuoteBtn')?.addEventListener('click', () => showPage('quote'));
+  document.getElementById('navLicenseBtn')?.addEventListener('click', () => showPage('license'));
+
+  // File menu
+  document.getElementById('fileNewBtn')?.addEventListener('click', fileNew);
+  document.getElementById('fileOpenBtn')?.addEventListener('click', fileOpen);
+  document.getElementById('fileSaveBtn')?.addEventListener('click', fileSave);
+  document.getElementById('fileSaveAsBtn')?.addEventListener('click', fileSaveAs);
+  document.getElementById('filePrintMenuBtn')?.addEventListener('click', printQuote);
+  document.getElementById('fileShareMenuBtn')?.addEventListener('click', shareQuote);
+  document.getElementById('fileExitBtn')?.addEventListener('click', exitApp);
+
+  // Developer modal wiring
+  document.getElementById('devLoginBtn')?.addEventListener('click', () => {
+    document.getElementById('devModal').style.display = 'flex';
+  });
+  document.getElementById('devCloseBtn')?.addEventListener('click', () => {
+    document.getElementById('devModal').style.display = 'none';
+  });
+  document.getElementById('devSetBtn')?.addEventListener('click', setDeveloperCredential);
+  document.getElementById('devLoginSubmitBtn')?.addEventListener('click', developerLogin);
+  document.getElementById('devLogoutBtn')?.addEventListener('click', developerLogout);
+
+  // License actions
+  document.getElementById('activateLicenseBtn')?.addEventListener('click', activateLicense);
+  document.getElementById('verifyPackagedBtn')?.addEventListener('click', async () => {
+    try {
+      const packaged = await loadPackagedMetadata();
+      console.log('packaged:', packaged);
+      if (packaged) {
+        // Map packaged metadata to local license structure (app.js will also do this on init)
+        const existing = getLicense() || {};
+        const now = Date.now();
+        const expiry = packaged.expiresAt ? new Date(packaged.expiresAt).getTime() : (packaged.expiry ? packaged.expiry : null);
+        const license = {
+          licenseKey: existing.licenseKey || null,
+          tier: (packaged.tier || packaged.type || 'standard').toString().toLowerCase().replace(/\s+/g, '_'),
+          activatedAt: existing.activatedAt || now,
+          expiry: expiry || existing.expiry || null,
+          device: existing.device || getDeviceFingerprint(),
+          source: 'packaged',
+          licenseId: existing.licenseId || ('PKG_' + now),
+          projectsCreatedTotal: Number(existing.projectsCreatedTotal || 0),
+          projectsLimit: Number(packaged.projectsLimit || packaged.projectLimit || (packaged.tier && packaged.tier.toLowerCase().includes('standard') ? 5 : Infinity))
+        };
+        saveLicense(license);
+        applyLicenseToUI();
+        updateLicenseStatus();
+        alert('Packaged metadata verified and license applied.');
+      } else {
+        alert('No valid packaged metadata found.');
+      }
+    } catch (e) {
+      console.error(e);
+      alert('Packaged verification failed. See console for details.');
+    }
+  });
+
+  // Load / sizing / quote wiring
+  document.getElementById('addApplianceBtn')?.addEventListener('click', addRow);
+  document.getElementById('calcSizingBtn')?.addEventListener('click', () => { calculateSizing(); showPage('sizing'); });
+  document.getElementById('toQuoteBtn')?.addEventListener('click', () => { populateQuoteFromSizing(); showPage('quote'); });
+
+  // Export / print / share
+  document.getElementById('exportPdfBtn')?.addEventListener('click', exportQuotePDF);
+  document.getElementById('printBtn')?.addEventListener('click', printQuote);
+  document.getElementById('shareBtn')?.addEventListener('click', shareQuote);
+
+  // Trial switch
+  document.getElementById('switchToTrialBtn')?.addEventListener('click', switchToTrial);
+
+  // Small UI initializations
+  document.getElementById('appVersion').innerText = APP_VERSION || '1.0.0';
+
+  // Ensure images are safe for html2canvas and provide a fallback logo
+  document.querySelectorAll("img").forEach(img => {
+    try {
+      img.crossOrigin = "anonymous";
+    } catch (e) {
+      // ignore if setting crossOrigin fails in some environments
+    }
+    if (!img.getAttribute('src') || img.getAttribute('src').trim() === "") {
+      // Use a relative fallback that works both in browser testing and packaged Electron builds
+      img.src = "assets/logo.png";
+    }
+  });
+// ===== Ensure quote currency mirrors system currency =====
+const currencyInput = document.getElementById("currencySelector");
+const quoteCurrencyMirror = document.getElementById("quoteCurrencyMirror");
+
+if (currencyInput && quoteCurrencyMirror) {
+  quoteCurrencyMirror.value = currencyInput.value;
+  currencyInput.addEventListener("change", () => {
+    quoteCurrencyMirror.value = currencyInput.value;
+  });
+}
+});
+</script>
+</body>
+</html>

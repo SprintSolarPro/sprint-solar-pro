@@ -1,0 +1,2312 @@
+/* Sprint Solar Pro - cleaned & consolidated app.js
+   Fixed: removed embedded raw metadata, consolidated duplicates,
+   robust sizing and quote logic, defensive DOM guards.
+   Part 1/10
+*/
+
+/* app.js — debug marker: confirms the file executed */
+console.log('app.js loaded:', new Date().toISOString());
+
+/* Safe reader for edge tabs metadata (reads JSON from index.html) */
+(function(){
+  try {
+    const el = document.getElementById('edgeTabsData');
+    if (!el) {
+      console.warn('edgeTabsData element not found in DOM; continuing with empty array');
+      Object.defineProperty(window, 'edge_all_open_tabs', { value: [], writable: false });
+      return;
+    }
+    const raw = el.textContent || '[]';
+    const parsed = JSON.parse(raw);
+    Object.defineProperty(window, 'edge_all_open_tabs', { value: parsed, writable: false });
+    console.log('edge_all_open_tabs loaded, length=', parsed.length);
+  } catch (e) {
+    console.error('Failed to parse edgeTabsData', e);
+    Object.defineProperty(window, 'edge_all_open_tabs', { value: [], writable: false });
+  }
+})();
+
+/* Global error handlers */
+window.addEventListener('error', (ev) => {
+  try {
+    const msg = ev && ev.message ? ev.message : '';
+    if (msg === 'Script error.' && (!ev.filename || ev.filename === '')) return;
+    console.error('Global error:', msg, ev.filename ? ev.filename + ':' + ev.lineno + ':' + ev.colno : '', ev && ev.error ? ev.error : null);
+    // Minimal UI indicator (non-blocking)
+    try {
+      const el = document.createElement('div');
+      el.style.cssText = 'position:fixed;left:0;right:0;top:0;background:#ffdddd;color:#900;padding:8px;z-index:99999;font-family:monospace';
+      el.textContent = 'JS error: ' + (msg || 'unknown error');
+      document.body.appendChild(el);
+      setTimeout(() => { try { el.remove(); } catch (e) {} }, 8000);
+    } catch (e) {}
+  } catch (e) {}
+});
+window.addEventListener('unhandledrejection', (ev) => { try { console.error('Unhandled promise rejection:', ev && ev.reason ? ev.reason : 'unknown'); } catch (e) {} });
+
+/* Configuration */
+const APP_VERSION = "1.0.0";
+const TRIAL_DAYS = 7;
+const SALES_FUNNEL_URL = "https://sprintsolar.gumroad.com";
+const BUILD_TIER = "pro_yearly";
+
+/* Currency helpers */
+const CURRENCY_SYMBOLS = {
+  NGN: "₦", USD: "$", EUR: "€", GBP: "£", JPY: "¥",
+  INR: "₹", ZAR: "R", AUD: "A$", CAD: "C$", CNY: "¥"
+};
+function getCurrencySymbol() {
+  try {
+    const raw = document.getElementById('currencySelector')?.value || 'NGN';
+    const code = String(raw).toUpperCase();
+    return CURRENCY_SYMBOLS[code] || raw;
+  } catch (e) { return '₦'; }
+}
+window.getCurrencySymbol = getCurrencySymbol;
+function formatWithCommas(number) {
+  const n = Number(number) || 0;
+  return new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+}
+window.formatWithCommas = formatWithCommas;
+/* Defensive populateQuoteFromSizing */
+function populateQuoteFromSizing() {
+  try {
+    const quoteTableBody = document.getElementById('quoteTableBody');
+    const quoteDateEl = document.getElementById('quoteDate');
+    const quoteIdEl = document.getElementById('quoteIdDisplay');
+    const brandNameEl = document.getElementById('brandName');
+    const companyLogoEl = document.getElementById('companyLogo');
+    const currencyMirror = document.getElementById('quoteCurrencyMirror');
+    const currencyInput = document.getElementById('currencySelector');
+
+    if (!quoteTableBody) return false;
+
+    Array.from(quoteTableBody.querySelectorAll('tr')).forEach(tr => {
+      if (tr.id === 'quoteTotalRow') return;
+      tr.remove();
+    });
+
+    const addQuoteRow = (name, qty, unitPrice) => {
+      try {
+        const totalRow = document.getElementById('quoteTotalRow');
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-quote-index', Date.now() + Math.floor(Math.random() * 1000));
+        tr.innerHTML = `
+          <td><input type="text" class="quote-item-name" name="quote_item_name[]" value="${String(name || '')}" /></td>
+          <td><label class="visually-hidden">Quantity</label><input type="number" class="quote-item-qty quoteQty" name="quote_item_qty[]" value="${Number(qty || 1)}" min="0" /></td>
+          <td><label class="visually-hidden">Unit price</label><input type="number" class="quote-item-price quotePrice" name="quote_item_price[]" value="${Number(unitPrice || 0)}" min="0" /></td>
+          <td class="quote-item-total quoteRowTotal">${(Number(qty || 1) * Number(unitPrice || 0)).toFixed(2)}</td>
+          <td class="action-cell" data-html2canvas-ignore="true"><button type="button" class="removeRowBtn">Remove</button></td>
+        `;
+        if (totalRow) quoteTableBody.insertBefore(tr, totalRow);
+        else quoteTableBody.appendChild(tr);
+      } catch (e) { console.error('addQuoteRow failed', e); }
+    };
+
+    try { if (quoteDateEl) quoteDateEl.innerText = (new Date()).toLocaleDateString(); } catch (e) {}
+    try {
+      if (quoteIdEl) {
+        const existing = quoteIdEl.innerText && quoteIdEl.innerText.trim();
+        quoteIdEl.innerText = existing || ('Q-' + Date.now().toString().slice(-6));
+      }
+    } catch (e) {}
+
+    try {
+      const companyName = (document.getElementById('companyName')?.value || document.getElementById('brandName')?.innerText || '').trim();
+      if (brandNameEl && companyName) brandNameEl.innerText = companyName;
+      const logoUrl = (document.getElementById('companyLogoUrl')?.value || companyLogoEl?.getAttribute('src') || '').trim();
+      if (companyLogoEl && logoUrl) {
+        try { companyLogoEl.src = logoUrl; } catch (e) {}
+      }
+    } catch (e) {}
+
+    try { if (currencyMirror && currencyInput) currencyMirror.value = currencyInput.value || ''; } catch (e) {}
+
+    const dailyEnergy = Number(document.getElementById('dailyEnergyDisplay')?.innerText || window.totalEnergyValue || 0);
+    const peakLoad = Number(document.getElementById('peakLoadDisplay')?.innerText || window.peakLoadValue || 0);
+    const inverterQty = Number(document.getElementById('inverterQtyResult')?.innerText || 0);
+    const batteryQty = Number(document.getElementById('batteryQty')?.innerText || 0);
+    const panelQty = Number(document.getElementById('panelQty')?.innerText || 0);
+
+    addQuoteRow('Inverter (qty: ' + inverterQty + ')', inverterQty || 1, 0);
+    addQuoteRow('Battery bank (qty: ' + batteryQty + ')', batteryQty || 1, 0);
+    addQuoteRow('Solar panels (qty: ' + panelQty + ')', panelQty || 1, 0);
+    addQuoteRow('Balance of system (cables, mounting, controller)', 1, 0);
+    addQuoteRow('Installation & commissioning', 1, 0);
+
+    if (typeof calculateQuoteTotals === 'function') {
+      try { calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals failed after populateQuoteFromSizing', e); }
+    } else if (typeof recalcQuoteTotals === 'function') {
+      try { recalcQuoteTotals(); } catch (e) { console.error('recalcQuoteTotals failed after populateQuoteFromSizing', e); }
+    }
+
+    if (typeof updateQuoteTotalDisplay === 'function') {
+      try { updateQuoteTotalDisplay(); } catch (e) { console.error('updateQuoteTotalDisplay failed after populateQuoteFromSizing', e); }
+    }
+
+    return true;
+  } catch (e) {
+    console.error('populateQuoteFromSizing failed', e);
+    return false;
+  }
+}
+window.populateQuoteFromSizing = populateQuoteFromSizing;
+
+/* Safety shim for showPage */
+if (!window.showPage) {
+  window.showPage = function(pageId) {
+    if (typeof window.__realShowPage === 'function') {
+      try { window.__realShowPage(pageId); } catch (e) { console.warn('showPage proxy immediate call failed', e); }
+      return;
+
+    const queued = function onReady() {
+      document.removeEventListener('DOMContentLoaded', onReady);
+      if (typeof window.__realShowPage === 'function') {
+        try { window.__realShowPage(pageId); } catch (e) { console.warn('showPage queued call failed', e); }
+      } else {
+        console.warn('showPage still not available after DOMContentLoaded:', pageId);
+      }
+    };
+    document.addEventListener('DOMContentLoaded', queued);
+  };
+}
+}
+/* Embedded crypto placeholders (kept but inert) */
+const EMBEDDED_AES_KEY_HEX = "REPLACE_WITH_AES_KEY_HEX";
+const EMBEDDED_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----\nREPLACE_WITH_PEM\n-----END PUBLIC KEY-----`;
+const PACKAGED_META = { b64: "", sig: "", checksum: "" };
+
+/* Crypto helpers (unchanged) */
+function hexToBytes(hex) { if (!hex) return new Uint8Array(); const bytes = new Uint8Array(hex.length / 2); for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16); return bytes; }
+async function importAesKeyFromHex(hex) { const raw = hexToBytes(hex); return await crypto.subtle.importKey("raw", raw, "AES-GCM", false, ["decrypt"]); }
+function pemToArrayBuffer(pem) { const b64 = pem.replace(/-----BEGIN PUBLIC KEY-----/, '').replace(/-----END PUBLIC KEY-----/, '').replace(/\s+/g, ''); const binary = atob(b64); const len = binary.length; const bytes = new Uint8Array(len); for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i); return bytes.buffer; }
+async function importRsaPublicKey(pem) { const spki = pemToArrayBuffer(pem); return await crypto.subtle.importKey("spki", spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]); }
+function base64ToBytes(b64) { const bin = atob(b64); const len = bin.length; const bytes = new Uint8Array(len); for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i); return bytes; }
+async function verifyRsaSignature(publicKey, dataUint8, signatureB64) { const sig = base64ToBytes(signatureB64); return await crypto.subtle.verify("RSASSA-PKCS1-v1_5", publicKey, sig, dataUint8); }
+async function sha256Hex(str) { const buf = new TextEncoder().encode(str); const hash = await crypto.subtle.digest('SHA-256', buf); return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join(''); }
+
+/* loadPackagedMetadata - cleaned: only attempts fetch-based path if embedded not present */
+async function loadPackagedMetadata() {
+  try {
+    // Option A: embedded PACKAGED_META (in-memory)
+    if (PACKAGED_META && PACKAGED_META.b64 && PACKAGED_META.b64.trim().length > 0) {
+      try {
+        const metaB64 = PACKAGED_META.b64.trim();
+        const ciphertextPackageStr = atob(metaB64);
+        const ciphertextPackage = JSON.parse(ciphertextPackageStr);
+        if (ciphertextPackage && ciphertextPackage.iv && ciphertextPackage.ct) {
+          const iv = base64ToBytes(ciphertextPackage.iv);
+          const authTag = ciphertextPackage.authTag ? base64ToBytes(ciphertextPackage.authTag) : null;
+          const ct = ciphertextPackage.ct ? base64ToBytes(ciphertextPackage.ct) : null;
+          let combined = ct;
+          if (authTag && ct) {
+            combined = new Uint8Array(ct.length + authTag.length);
+            combined.set(ct, 0);
+            combined.set(authTag, ct.length);
+          }
+          const aesKey = await importAesKeyFromHex(EMBEDDED_AES_KEY_HEX);
+          const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, combined);
+          const plaintextStr = new TextDecoder().decode(new Uint8Array(decrypted));
+          const payload = JSON.parse(plaintextStr);
+          const signatureB64 = PACKAGED_META.sig || payload.sig || null;
+          const dataObj = payload.data || payload;
+          if (!signatureB64) { console.warn("No signature found for embedded metadata"); return null; }
+          const publicKey = await importRsaPublicKey(EMBEDDED_PUBLIC_KEY_PEM);
+          const dataUint8 = new TextEncoder().encode(JSON.stringify(dataObj));
+          const verified = await verifyRsaSignature(publicKey, dataUint8, signatureB64);
+          if (!verified) { console.warn("Embedded metadata signature verification failed"); return null; }
+          return dataObj;
+        }
+      } catch (e) {
+        console.warn("Embedded meta parse/decrypt failed", e);
+      }
+    }
+
+    // Option B: fetch meta files (meta.b64, meta.checksum, meta.sig)
+    const metaB64Resp = await fetch("meta.b64").catch(() => null);
+    if (!metaB64Resp || !metaB64Resp.ok) return null;
+    const metaB64 = (await metaB64Resp.text()).trim();
+    const checksumResp = await fetch("meta.checksum").catch(() => null);
+    const sigResp = await fetch("meta.sig").catch(() => null);
+    const checksum = checksumResp && checksumResp.ok ? (await checksumResp.text()).trim() : null;
+    const sig = sigResp && sigResp.ok ? (await sigResp.text()).trim() : null;
+    const ciphertextPackageStr = atob(metaB64);
+    if (checksum) {
+      const calc = await sha256Hex(ciphertextPackageStr);
+      if (calc !== checksum) {
+        console.warn("meta.checksum mismatch", calc, checksum);
+        return null;
+      }
+    }
+    let ciphertextPackage;
+    try {
+      ciphertextPackage = JSON.parse(ciphertextPackageStr);
+    } catch (e) {
+      console.warn("Invalid ciphertext package JSON", e);
+      return null;
+    }
+    if (!ciphertextPackage || !ciphertextPackage.iv || !ciphertextPackage.ct) {
+      console.warn("Ciphertext package missing required fields");
+      return null;
+    }
+    const iv = base64ToBytes(ciphertextPackage.iv);
+    const authTag = ciphertextPackage.authTag ? base64ToBytes(ciphertextPackage.authTag) : null;
+    const ct = ciphertextPackage.ct ? base64ToBytes(ciphertextPackage.ct) : null;
+    let combined;
+    if (authTag && ct) {
+      combined = new Uint8Array(ct.length + authTag.length);
+      combined.set(ct, 0);
+      combined.set(authTag, ct.length);
+    } else {
+      combined = ct;
+    }
+    const aesKey = await importAesKeyFromHex(EMBEDDED_AES_KEY_HEX);
+    let plaintextStr;
+    try {
+      const decrypted = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, aesKey, combined);
+      plaintextStr = new TextDecoder().decode(new Uint8Array(decrypted));
+    } catch (e) {
+      console.warn("Failed to decrypt fetched metadata", e);
+      return null;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(plaintextStr);
+    } catch (e) {
+      console.warn("Invalid fetched plaintext JSON", e);
+      return null;
+    }
+    const signatureB64 = sig || payload.sig || null;
+    const dataObj = payload.data || payload;
+    if (!signatureB64) {
+      console.warn("No signature found for fetched metadata");
+      return null;
+    }
+    const publicKey = await importRsaPublicKey(EMBEDDED_PUBLIC_KEY_PEM);
+    const dataUint8 = new TextEncoder().encode(JSON.stringify(dataObj));
+    const verified = await verifyRsaSignature(publicKey, dataUint8, signatureB64);
+    if (!verified) {
+      console.warn("Fetched metadata signature verification failed");
+      return null;
+    }
+    return dataObj;
+  } catch (err) {
+    console.error("loadPackagedMetadata error", err);
+    return null;
+  }
+}
+window.loadPackagedMetadata = loadPackagedMetadata;
+
+/* Safety shims for file menu functions (defensive) */
+if (!window.fileNew) window.fileNew = function() { console.warn('fileNew called before app initialization'); };
+if (!window.fileOpen) window.fileOpen = function() { console.warn('fileOpen called before app initialization'); };
+if (!window.fileSave) window.fileSave = function() { console.warn('fileSave called before app initialization'); };
+if (!window.fileSaveAs) window.fileSaveAs = function() { console.warn('fileSaveAs called before app initialization'); };
+if (!window.exportQuotePDF) window.exportQuotePDF = function() { console.warn('exportQuotePDF called before app initialization'); };
+if (!window.printQuote) window.printQuote = function() { console.warn('printQuote called before app initialization'); };
+if (!window.shareQuote) window.shareQuote = function() { console.warn('shareQuote called before app initialization'); };
+if (!window.exitApp) window.exitApp = function() { console.warn('exitApp called before app initialization'); };
+
+/* Helper: find best quote element */
+function findBestQuoteElement() {
+  let el = document.getElementById('quoteWrapper');
+  if (el && el.offsetHeight > 0) return el;
+  el = document.getElementById('quote');
+  if (el && el.offsetHeight > 0) return el;
+  el = document.getElementById('quoteTableBody');
+  if (el && el.offsetHeight > 0) return el;
+  return null;
+}
+
+/* License helpers and simple hashing */
+async function verifyGumroadLicense(key) {
+  const productIdMap = {
+    trial: null,
+    standard: 'GUMROAD_PRODUCT_ID_STANDARD',
+    pro_monthly: 'GUMROAD_PRODUCT_ID_PRO_MONTHLY',
+    pro_yearly: 'GUMROAD_PRODUCT_ID_PRO_YEARLY',
+    enterprise: 'GUMROAD_PRODUCT_ID_ENTERPRISE'
+  };
+  const productId = productIdMap[BUILD_TIER];
+  if (!productId) return { ok: false, reason: 'trial_build' };
+  const endpoint = 'https://gumroad.com';
+  const body = new URLSearchParams({ product_id: productId, license_key: key });
+  try {
+    const resp = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body
+    });
+    if (!resp.ok) return { ok: false, reason: 'http_' + resp.status };
+    const data = await resp.json().catch(() => null);
+    if (!data || !data.success) return { ok: false, reason: 'invalid_or_wrong_product' };
+    const purchase = data.purchase || {};
+    const sub = purchase.subscription || {};
+    const expiry = sub.next_charge_date ? new Date(sub.next_charge_date).getTime() : null;
+    const projectsLimitByTier = { standard: 5, pro_monthly: Infinity, pro_yearly: Infinity, enterprise: Infinity };
+    return { ok: true, tier: BUILD_TIER, expiry, projectsLimit: projectsLimitByTier[BUILD_TIER] ?? Infinity };
+  } catch (err) {
+    return { ok: false, reason: 'network_error' };
+  }
+}
+window.verifyGumroadLicense = verifyGumroadLicense;
+
+function simpleHash(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return ('00000000' + (h >>> 0).toString(16)).slice(-8);
+}
+window.simpleHash = simpleHash;
+
+if (typeof getDeviceFingerprint !== 'function') {
+  window.getDeviceFingerprint = function() {
+    try {
+      const ua = navigator.userAgent || '';
+      const platform = navigator.platform || '';
+      const screenSize = (typeof screen !== 'undefined' && screen.width && screen.height) ? `${screen.width}x${screen.height}` : '';
+      const tz = (typeof Intl !== 'undefined' && Intl.DateTimeFormat) ? (Intl.DateTimeFormat().resolvedOptions().timeZone || '') : '';
+      return simpleHash([ua, platform, screenSize, tz].join('|'));
+    } catch (e) { return 'unknown-device'; }
+  };
+}
+
+/* Persistent license storage */
+function saveLicense(lic) {
+  try { localStorage.setItem('ssp_license', JSON.stringify(lic)); } catch (e) { console.warn('saveLicense failed', e); }
+}
+window.saveLicense = saveLicense;
+
+/* Conservative validator (V1) */
+function isLicenseValidSafe() {
+  try {
+    const lic = (typeof getLicense === 'function') ? getLicense() : JSON.parse(localStorage.getItem('ssp_license') || 'null');
+    if (!lic) return false;
+    if (lic.expiry) {
+      const expiryTs = Number(lic.expiry);
+      if (!isNaN(expiryTs) && expiryTs < Date.now()) return false;
+    }
+    const tier = (lic.tier || lic.type || '').toString().toLowerCase();
+    if (!tier || tier === 'trial') return false;
+    const hasId = !!(lic.licenseKeyHash || lic.licenseId || lic.source);
+    if (!hasId) return false;
+    if (lic.device) {
+      const current = (typeof getDeviceFingerprint === 'function') ? getDeviceFingerprint() : null;
+      if (current && lic.device !== current) {
+        if (String(lic.source || '').toLowerCase() === 'test') return true;
+        if (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn()) return true;
+        return false;
+      }
+    }
+    return true;
+  } catch (e) { console.error('isLicenseValidSafe error', e); return false; }
+}
+
+/* Dev override gating */
+window.__dev_override_enabled = false;
+function enableDevOverrideForSession() {
+  if (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn()) {
+    window.__dev_override_enabled = true;
+    console.warn('Dev override enabled for this session.');
+  } else {
+    console.warn('Dev override can only be enabled by a logged-in developer.');
+  }
+}
+function disableDevOverrideForSession() { window.__dev_override_enabled = false; }
+window.enableDevOverrideForSession = enableDevOverrideForSession;
+window.disableDevOverrideForSession = disableDevOverrideForSession;
+
+/* getLicense - prefer stored license, fallback to DOM */
+function getLicense() {
+  try {
+    const stored = localStorage.getItem('ssp_license');
+    if (stored) return JSON.parse(stored);
+    if (window.__dev_override_enabled) {
+      return {
+        licenseKey: 'DEVTOOLS-PRO-YEARLY-TEST',
+        tier: 'pro_yearly',
+        activatedAt: Date.now(),
+        expiry: Date.now() + 365 * 24 * 60 * 60 * 1000,
+        device: 'devtools-device',
+        source: 'manual',
+        licenseId: 'DEVTOOLS_PRO_YEARLY_' + Date.now(),
+        projectsCreatedTotal: 0,
+        projectsLimit: Infinity
+      };
+    }
+    const keyEl = document.getElementById('licenseKeyInput');
+    const tierEl = document.getElementById('licenseTierDisplay');
+    const expiryEl = document.getElementById('licenseExpiry');
+    const licenseKey = keyEl ? keyEl.value.trim() : '';
+    const tier = tierEl ? tierEl.textContent.trim().toLowerCase() : 'trial';
+    const expiry = expiryEl ? new Date(expiryEl.textContent.trim()).getTime() : null;
+    if (!licenseKey && tier === 'trial') return null;
+    return { licenseKey, tier, expiry, device: getDeviceFingerprint(), source: 'dom' };
+  } catch (e) { console.error("getLicense failed", e); return null; }
+}
+window.getLicense = getLicense;
+
+/* License validation wrapper and helpers */
+if (typeof isLicenseValid === 'function') {
+  const orig = isLicenseValid;
+  window.isLicenseValid = function() {
+    try { return orig() || isLicenseValidSafe() || (window.__dev_override_enabled === true); } catch (e) { return isLicenseValidSafe() || (window.__dev_override_enabled === true); }
+  };
+} else {
+  window.isLicenseValid = function() { return isLicenseValidSafe() || (window.__dev_override_enabled === true); };
+}
+
+/* Developer credential & login helpers */
+function setDeveloperCredential() {
+  const pwd = document.getElementById('devSetPassword')?.value || '';
+  if (!pwd) { alert('Enter a password to set as developer credential'); return; }
+  const hashed = simpleHash(pwd);
+  localStorage.setItem('ssp_dev_cred', hashed);
+  alert('Developer credential saved locally on this device. Use Developer Login to sign in.');
+  const el = document.getElementById('devSetPassword'); if (el) el.value = '';
+}
+window.setDeveloperCredential = setDeveloperCredential;
+
+function developerLogin() {
+  const pwd = document.getElementById('devLoginPassword')?.value || '';
+  const stored = localStorage.getItem('ssp_dev_cred');
+  if (!stored) { alert('No developer credential set. Set it first in the modal.'); return; }
+  if (!pwd) { alert('Enter developer password'); return; }
+  const hashed = simpleHash(pwd);
+  if (hashed === stored) {
+    sessionStorage.setItem('ssp_dev_logged_in', '1');
+    if (typeof updateDevStatusUI === 'function') updateDevStatusUI();
+    if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions();
+    if (typeof updateFileMenuState === 'function') updateFileMenuState();
+    alert('Developer login successful. Full functionality enabled for this session.');
+  } else {
+    alert('Incorrect developer password');
+  }
+}
+function developerLogout() {
+  sessionStorage.removeItem('ssp_dev_logged_in');
+  if (typeof updateDevStatusUI === 'function') updateDevStatusUI();
+  if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions();
+  if (typeof updateFileMenuState === 'function') updateFileMenuState();
+  alert('Developer session ended. Trial restrictions re-applied if applicable.');
+}
+function isDeveloperLoggedIn() { try { return sessionStorage.getItem('ssp_dev_logged_in') === '1'; } catch { return false; } }
+window.developerLogin = developerLogin;
+window.developerLogout = developerLogout;
+window.isDeveloperLoggedIn = isDeveloperLoggedIn;
+
+/* Project counters and quote id */
+let quoteCounter = Number(localStorage.getItem('ssp_quote_counter') || 1000);
+function getNextQuoteId() {
+  quoteCounter = Number(localStorage.getItem('ssp_quote_counter') || quoteCounter || 1000) + 1;
+  localStorage.setItem('ssp_quote_counter', String(quoteCounter));
+  return `Quotation_${quoteCounter}`;
+}
+window.getNextQuoteId = getNextQuoteId;
+
+/* Branding and UI helpers */
+function updateBranding() {
+  try {
+    const nameInput = document.getElementById('companyName');
+    const logoInput = document.getElementById('companyLogoUrl');
+    const brandName = document.getElementById('brandName');
+    const companyLogo = document.getElementById('companyLogo');
+    if (brandName && nameInput) brandName.innerText = nameInput.value || 'Your Company Name';
+    if (!companyLogo) return;
+    try { companyLogo.crossOrigin = "anonymous"; } catch (e) {}
+    try {
+      if (window.sspNative && typeof window.sspNative.readAssetAsDataUrl === 'function') {
+        const dataUrl = window.sspNative.readAssetAsDataUrl('assets/logo.png');
+        if (dataUrl) { companyLogo.src = dataUrl; return; }
+      }
+    } catch (e) {}
+    const userSrc = (logoInput?.value || '').trim();
+    if (userSrc && !userSrc.startsWith('file:///')) { companyLogo.src = userSrc; return; }
+    const inlinePlaceholder = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org" width="200" height="60"><rect width="100%" height="100%" fill="#ffffff"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-size="14">Company Logo</text></svg>');
+    companyLogo.src = inlinePlaceholder;
+  } catch (e) { console.error('updateBranding failed', e); }
+}
+window.updateBranding = updateBranding;
+
+/* Load analysis, sizing, quote engine - merged and robust */
+window.totalEnergyValue = 0;
+window.peakLoadValue = 0;
+
+/* Add load row */
+function addRow() {
+  try {
+    const tbody = document.querySelector('#loadTableBody');
+    if (!tbody) return;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" class="appliance" placeholder="Appliance"></td>
+      <td><input type="number" class="qty" value="1" min="0"></td>
+      <td><input type="number" class="power" value="0" min="0"></td>
+      <td><input type="number" class="hours" value="0" min="0"></td>
+      <td class="energyCell">0.00</td>
+      <td class="action-cell" data-html2canvas-ignore="true"><button class="removeRowBtn" type="button">Remove</button></td>
+    `;
+    tbody.appendChild(tr);
+    tr.querySelector('.removeRowBtn')?.addEventListener('click', () => { tr.remove(); calculateTotal(); });
+    calculateTotal();
+  } catch (e) { console.error('addRow failed', e); }
+}
+window.addRow = addRow;
+
+/* Calculate totals for load analysis */
+function calculateTotal() {
+  try {
+    let total = 0, peak = 0;
+    document.querySelectorAll('#loadTableBody tr').forEach(row => {
+      const qty = Number(row.querySelector('.qty')?.value) || 0;
+      const power = Number(row.querySelector('.power')?.value) || 0;
+      const hours = Number(row.querySelector('.hours')?.value) || 0;
+      const energy = qty * power * hours;
+      const energyEl = row.querySelector('.energyCell');
+      if (energyEl) energyEl.innerText = energy.toFixed(2);
+      total += energy;
+      peak = Math.max(peak, qty * power);
+    });
+    const totalEl = document.getElementById('totalEnergy');
+    if (totalEl) totalEl.innerText = total.toFixed(2);
+    window.totalEnergyValue = total;
+    window.peakLoadValue = peak;
+  } catch (e) { console.error('calculateTotal failed', e); }
+}
+window.calculateTotal = calculateTotal;
+
+/* Auto-update Load Analysis totals when editing rows */
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (!t) return;
+  if (t.closest('#loadTableBody')) {
+    calculateTotal();
+  }
+});
+
+/* Sizing engine and UI updates (robust) */
+let systemQuantities = { inverterQty: 1, batteryQty: 0, panelQty: 0, chargeControllerQty: 0 };
+window.systemQuantities = systemQuantities;
+
+function calculateSizing() {
+  try {
+    calculateTotal();
+    const totalEnergy = window.totalEnergyValue || 0;
+    const systemVoltage = Number(document.getElementById('systemVoltage')?.value || 48);
+    const sunHours = Number(document.getElementById('sunHours')?.value || 5);
+    const deratingFactor = Number(document.getElementById('deratingFactor')?.value || 80) / 100;
+    const autonomyDays = Number(document.getElementById('autonomyDays')?.value || 2);
+    const batteryCapacityUnit = Number(document.getElementById('batteryCapacity')?.value || 200);
+    const panelWatt = Number(document.getElementById('panelWatt')?.value || 550);
+    const batteryDoD = Number(document.getElementById('batteryDoD')?.value || 80) / 100;
+    const batteryVoltage = Number(document.getElementById('batteryVoltage')?.value || 12);
+    const inverterKva = Number(document.getElementById('inverterRatedPower')?.value || 0);
+    const inverterPF = Number(document.getElementById('inverterPF')?.value || 0.8);
+    const inverterCapacityInput = Number(document.getElementById('inverterCapacity')?.value || 0);
+
+    const inverterCapacity = inverterKva > 0
+      ? (inverterKva * 1000 * (isFinite(inverterPF) && inverterPF > 0 ? inverterPF : 0.8))
+      : (inverterCapacityInput > 0 ? inverterCapacityInput : 4000);
+
+    const safe = (v, min) => (isFinite(v) && v >= min ? v : min);
+    const WhPerDay = safe(totalEnergy, 0);
+    const Vsys = safe(systemVoltage, 12);
+    const Hsun = safe(sunHours, 1);
+    const derate = Math.min(Math.max(deratingFactor, 0.5), 1.0);
+    const days = safe(autonomyDays, 0.25);
+    const AhUnit = safe(batteryCapacityUnit, 50);
+    const Wpanel = safe(panelWatt, 100);
+    const DoD = Math.min(Math.max(batteryDoD, 0.5), 0.95);
+    const Vbat = safe(batteryVoltage, 12);
+
+    const peakLoadW = window.peakLoadValue || 0;
+    const inverterW = Math.ceil(peakLoadW * 1.25);
+    const inverterQty = Math.max(1, Math.ceil(inverterW / inverterCapacity));
+
+    const requiredWh = (WhPerDay * days) / DoD;
+    const requiredAhAtSystemV = requiredWh / Vsys;
+
+    // robust battery layout calculation
+    const VbatNum = Number(Vbat) || 12;
+    const VsysNum = Number(Vsys) || 48;
+    const seriesCount = VbatNum > 0 ? Math.max(1, Math.ceil(VsysNum / VbatNum)) : 0;
+    const usableWhPerBattery = AhUnit * VbatNum * DoD;
+    const batteryQtyConservative = usableWhPerBattery > 0 ? Math.ceil(requiredWh / usableWhPerBattery) : 0;
+    let batteryQtyFinal = batteryQtyConservative > 0 ? Math.max(1, Math.ceil(seriesCount * Math.ceil(batteryQtyConservative / Math.max(1, seriesCount)))) : 0;
+    const parallelCount = seriesCount > 0 ? Math.max(1, Math.ceil(batteryQtyFinal / seriesCount)) : 0;
+    const batteryQty = batteryQtyFinal;
+
+    const panelQty = Math.max(0, Math.ceil(WhPerDay / (Wpanel * Hsun * derate)));
+    const arrayPowerW = panelQty * Wpanel;
+    const arrayCurrentA = Vsys > 0 ? (arrayPowerW / Vsys) : 0;
+    const controllerA = Math.ceil(arrayCurrentA * 1.25);
+    const chargeControllerQty = Math.max(1, Math.ceil(controllerA / 60));
+
+    // store for other parts of the app
+    window.systemQuantities = { inverterQty, batteryQty, panelQty, chargeControllerQty, seriesCount, parallelCount };
+
+    // update intermediate UI if available
+    if (typeof updateSizingUI === 'function') {
+      try { updateSizingUI({ inverterW, batteryQty, panelQty, controllerA, chargeControllerQty, seriesCount, parallelCount }); } catch (e) {}
+    }
+
+    // update final summary UI
+    if (typeof finalizeSizingUI === 'function') {
+      try {
+        finalizeSizingUI({
+          inverterQty,
+          totalBatteryQty: batteryQty,
+          panelQty,
+          totalEnergy: WhPerDay,
+          peakLoad: peakLoadW,
+          systemVoltage: Vsys,
+          batteryVoltage: Vbat,
+          batteryCapacityUnit: AhUnit,
+          batteryDoD: DoD,
+          autonomyDays: days,
+          panelWatt: Wpanel,
+          controllerA,
+          chargeControllerQty,
+          seriesCount,
+          parallelCount
+        });
+      } catch (e) { console.error('finalizeSizingUI call failed', e); }
+    }
+
+  } catch (err) {
+    console.error("Sizing calculation error:", err);
+  }
+}
+window.calculateSizing = calculateSizing;
+
+/* finalizeSizingUI - updates DOM with sizing results (defensive) */
+function finalizeSizingUI({
+  inverterQty,
+  totalBatteryQty,
+  panelQty,
+  totalEnergy,
+  peakLoad,
+  systemVoltage,
+  batteryVoltage,
+  batteryCapacityUnit,
+  batteryDoD,
+  autonomyDays,
+  panelWatt,
+  controllerA,
+  chargeControllerQty,
+  seriesCount,
+  parallelCount
+}) {
+  try {
+    const dailyEl = document.getElementById('dailyEnergyDisplay');
+    if (dailyEl) dailyEl.innerText = Number(totalEnergy || 0).toFixed(0);
+
+    const peakEl = document.getElementById('peakLoadDisplay');
+    if (peakEl) peakEl.innerText = Number(peakLoad || 0).toFixed(0);
+
+    const invEl = document.getElementById('inverterQtyResult');
+    if (invEl) invEl.innerText = inverterQty;
+
+    const batQtyEl = document.getElementById('batteryQty');
+    if (batQtyEl) batQtyEl.innerText = totalBatteryQty;
+
+    const batConnEl = document.getElementById('batteryConnectionType');
+    if (batConnEl) batConnEl.innerText = (systemVoltage || '') + 'V system / ' + (batteryVoltage || '') + 'V batteries';
+
+    const runtimeEl = document.getElementById('batteryRuntimeHours');
+    if (runtimeEl) {
+      const usableWh = (Number(totalBatteryQty || 0) * Number(batteryCapacityUnit || 0) * Number(batteryVoltage || 12) * Number(batteryDoD || 0));
+      const hours = (peakLoad > 0) ? (usableWh / peakLoad) : 0;
+      runtimeEl.innerText = Number(hours || 0).toFixed(1);
+    }
+
+    const runtimeTargetEl = document.getElementById('batteryRuntimeTargetHours');
+    if (runtimeTargetEl) runtimeTargetEl.innerText = (Number(autonomyDays || 0) * 24).toFixed(1);
+
+    const panelQtyEl = document.getElementById('panelQty');
+    if (panelQtyEl) panelQtyEl.innerText = panelQty;
+
+    const panelConnEl = document.getElementById('panelConnectionType');
+    if (panelConnEl) panelConnEl.innerText = (panelWatt || '') + 'W panels';
+
+    const panelSeriesEl = document.getElementById('panelSeriesCount');
+    if (panelSeriesEl) panelSeriesEl.innerText = Math.ceil((systemVoltage || 48) / (batteryVoltage || 12));
+
+    const panelParallelEl = document.getElementById('panelParallelCount');
+    if (panelParallelEl) panelParallelEl.innerText = Math.ceil((panelQty || 0) / Math.max(1, Math.ceil((systemVoltage || 48) / (batteryVoltage || 12))));
+
+    // battery series/parallel display
+    const seriesEl = document.getElementById('batterySeriesCount');
+    if (seriesEl) seriesEl.innerText = seriesCount || 0;
+    const parallelEl = document.getElementById('batteryParallelCount');
+    if (parallelEl) parallelEl.innerText = parallelCount || 0;
+
+    // Charge controller display
+    const controllerEl = document.getElementById('chargeControllerDisplay');
+    if (controllerEl) controllerEl.innerText = (controllerA || 0) + ' A (' + (chargeControllerQty || 0) + ' unit(s))';
+
+    // Cable gauge helper
+    function cableSizeForCurrent(A) {
+      if (A <= 20) return '2.5 mm²';
+      if (A <= 35) return '4 mm²';
+      if (A <= 50) return '6 mm²';
+      if (A <= 70) return '10 mm²';
+      if (A <= 95) return '16 mm²';
+      if (A <= 130) return '25 mm²';
+      if (A <= 170) return '35 mm²';
+      if (A <= 230) return '50 mm²';
+      return 'Professional sizing required';
+    }
+    const cableEl = document.getElementById('cableGaugeDisplay');
+    if (cableEl) {
+      const approxCurrent = Math.ceil((Number(peakLoad || 0) / Number(systemVoltage || 48)));
+      cableEl.innerText = 'Size based on ' + Number(peakLoad || 0).toFixed(0) + ' W load; approx ' + cableSizeForCurrent(approxCurrent);
+    }
+
+  } catch (e) {
+    console.error('finalizeSizingUI error', e);
+  }
+}
+window.finalizeSizingUI = finalizeSizingUI;
+
+/* Quote / currency helpers */
+/* Defensive updateCurrencySymbol
+   Updates currency mirrors and triggers safe recalculation */
+/* Defensive updateCurrencySymbol */
+function updateCurrencySymbol() {
+  try {
+    const cur = (document.getElementById('currencySelector')?.value ?? '').toString().trim();
+    const mirror = document.getElementById('quoteCurrencyMirror');
+    if (mirror) {
+      if ('value' in mirror) mirror.value = cur;
+      else mirror.innerText = cur;
+    }
+
+    const header = document.getElementById('quoteCurrencyHeader');
+    const headerTotal = document.getElementById('quoteCurrencyTotalHeader');
+    if (header) header.innerText = cur || header.innerText || '';
+    if (headerTotal) headerTotal.innerText = cur || headerTotal.innerText || '';
+
+    if (typeof applyCurrencySymbolToUI === 'function') {
+      try { applyCurrencySymbolToUI(cur); } catch (e) { console.warn('applyCurrencySymbolToUI failed', e); }
+    }
+
+    if (typeof calculateQuoteTotals === 'function') {
+      try { calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals failed from updateCurrencySymbol', e); }
+    } else if (typeof recalcQuoteTotals === 'function') {
+      try { recalcQuoteTotals(); } catch (e) { console.error('recalcQuoteTotals failed from updateCurrencySymbol', e); }
+    }
+
+    return cur;
+  } catch (e) {
+    console.error('updateCurrencySymbol failed', e);
+    return '';
+  }
+}
+window.updateCurrencySymbol = updateCurrencySymbol;
+
+
+
+/* Quote rows: robust addQuoteRow and totals calculation */
+function addQuoteRow(item = {}) {
+  try {
+    const tbody = document.getElementById('quoteTableBody');
+    const totalRow = document.getElementById('quoteTotalRow');
+    if (!tbody || !totalRow) return;
+    const newRow = document.createElement('tr');
+
+    const tdName = document.createElement('td');
+    const inpName = document.createElement('input');
+    inpName.type = 'text';
+    inpName.className = 'quote-item-name';
+    inpName.name = 'quote_item_name[]';
+    inpName.value = item.name || '';
+    tdName.appendChild(inpName);
+
+    const tdQty = document.createElement('td');
+    const inpQty = document.createElement('input');
+    inpQty.type = 'number';
+    inpQty.className = 'quote-item-qty';
+    inpQty.name = 'quote_item_qty[]';
+    inpQty.value = item.qty || 1;
+    inpQty.min = 0;
+    tdQty.appendChild(inpQty);
+
+    const tdPrice = document.createElement('td');
+    const inpPrice = document.createElement('input');
+    inpPrice.type = 'number';
+    inpPrice.className = 'quote-item-price';
+    inpPrice.name = 'quote_item_price[]';
+    inpPrice.value = item.price || 0;
+    inpPrice.min = 0;
+    tdPrice.appendChild(inpPrice);
+
+    const tdTotal = document.createElement('td');
+    const inpTotal = document.createElement('input');
+    inpTotal.type = 'text';
+    inpTotal.className = 'quote-item-total';
+    inpTotal.name = 'quote_item_total[]';
+    inpTotal.disabled = true;
+    inpTotal.value = '0.00';
+    tdTotal.appendChild(inpTotal);
+
+    const tdAction = document.createElement('td');
+    tdAction.className = 'action-cell';
+    tdAction.setAttribute('data-html2canvas-ignore', 'true');
+
+    const btnRemove = document.createElement('button');
+    btnRemove.type = 'button';
+    btnRemove.innerText = 'Remove';
+    btnRemove.addEventListener('click', () => { newRow.remove(); calculateQuoteTotals(); });
+    tdAction.appendChild(btnRemove);
+
+    newRow.appendChild(tdName);
+    newRow.appendChild(tdQty);
+    newRow.appendChild(tdPrice);
+    newRow.appendChild(tdTotal);
+    newRow.appendChild(tdAction);
+
+    tbody.insertBefore(newRow, totalRow);
+
+    // Recalc when qty or price changes
+    [inpQty, inpPrice].forEach(el => el.addEventListener('input', () => {
+      const q = Math.max(0, Number(inpQty.value) || 0);
+      const p = Math.max(0, Number(inpPrice.value) || 0);
+      inpTotal.value = (q * p).toFixed(2);
+      calculateQuoteTotals();
+    }));
+
+    // initialize total for this row
+    inpQty.dispatchEvent(new Event('input'));
+  } catch (e) { console.error('addQuoteRow failed', e); }
+}
+window.addQuoteRow = addQuoteRow;
+
+/* Unified calculateQuoteTotals (aliases for legacy names) */
+/* Defensive updateQuoteTotalDisplay
+   Accepts optional numeric total; if omitted reads from DOM */
+/* Defensive updateQuoteTotalDisplay */
+function updateQuoteTotalDisplay(total) {
+  try {
+    let value = total;
+    if (typeof value === 'undefined' || value === null) {
+      const quoteTotalEl = document.getElementById('quoteTotal');
+      value = Number(quoteTotalEl?.value ?? quoteTotalEl?.dataset?.raw ?? 0);
+    }
+    value = Number(value || 0);
+
+    const totalInput = document.getElementById('quoteTotal');
+    if (totalInput) {
+      if (totalInput.tagName && totalInput.tagName.toLowerCase() === 'input') {
+        totalInput.value = value.toFixed(2);
+        totalInput.dataset.raw = String(value);
+      } else {
+        totalInput.innerText = value.toFixed(2);
+        totalInput.dataset.raw = String(value);
+      }
+    }
+
+    const displayEl = document.getElementById('quoteTotalDisplay') || document.getElementById('quoteTotalLabel');
+    if (displayEl) {
+      if (displayEl.tagName && displayEl.tagName.toLowerCase() === 'input') displayEl.value = value.toFixed(2);
+      else displayEl.innerText = value.toFixed(2);
+    }
+
+    return value;
+  } catch (e) {
+    console.error('updateQuoteTotalDisplay failed', e);
+    return 0;
+  }
+}
+window.updateQuoteTotalDisplay = updateQuoteTotalDisplay;
+
+
+/* Defensive calculateQuoteTotals */
+function calculateQuoteTotals() {
+  try {
+    const tbody = document.getElementById('quoteTableBody');
+    if (!tbody) return 0;
+    let grandTotal = 0;
+
+    Array.from(tbody.querySelectorAll('tr')).forEach(row => {
+      if (row.id === 'quoteTotalRow') return;
+      const qtyEl = row.querySelector('.quote-item-qty, .quoteQty, input[name^="quoteQty"]');
+      const priceEl = row.querySelector('.quote-item-price, .quotePrice, input[name^="quotePrice"]');
+      const rowTotalEl = row.querySelector('.quote-item-total, .quoteRowTotal, td.quoteRowTotal');
+
+      const qty = Number(qtyEl?.value ?? 0);
+      const price = Number(priceEl?.value ?? 0);
+      const rowTotal = (isFinite(qty) ? qty : 0) * (isFinite(price) ? price : 0);
+
+      if (rowTotalEl) {
+        if (rowTotalEl.tagName && rowTotalEl.tagName.toLowerCase() === 'input') {
+          rowTotalEl.value = rowTotal.toFixed(2);
+          rowTotalEl.dataset.raw = String(rowTotal);
+        } else {
+          rowTotalEl.innerText = rowTotal.toFixed(2);
+          rowTotalEl.dataset.raw = String(rowTotal);
+        }
+      }
+      grandTotal += rowTotal;
+    });
+
+    const quoteTotalEl = document.getElementById('quoteTotal');
+    if (quoteTotalEl) {
+      quoteTotalEl.value = Number(grandTotal || 0).toFixed(2);
+      quoteTotalEl.dataset.raw = String(grandTotal || 0);
+    }
+
+    if (typeof updateQuoteTotalDisplay === 'function') {
+      try { updateQuoteTotalDisplay(Number(grandTotal || 0)); } catch (e) { console.error('updateQuoteTotalDisplay failed', e); }
+    }
+
+    return grandTotal;
+  } catch (e) {
+    console.error('calculateQuoteTotals failed', e);
+    return 0;
+  }
+}
+window.calculateQuoteTotals = calculateQuoteTotals;
+
+
+/* Populate quote table from sizing results */
+/* Defensive populateQuoteFromSizing
+   Copies key sizing results into the quote UI in a safe, non-failing way */
+/* Export helpers and html2canvas sanitization */
+function _hideUiForExport() {
+  const toHide = [];
+  try {
+    document.querySelectorAll('.no-export, [data-html2canvas-ignore]').forEach(el => {
+      if (el && el.style && el.style.display !== 'none') { toHide.push({ el, prev: el.style.display }); el.style.display = 'none'; }
+    });
+    document.querySelectorAll('.app-header, .app-footer').forEach(el => {
+      if (el && !el.hasAttribute('data-user-header') && !el.hasAttribute('data-user-footer')) {
+        if (el.style && el.style.display !== 'none') { toHide.push({ el, prev: el.style.display }); el.style.display = 'none'; }
+      }
+    });
+  } catch (e) { console.error('_hideUiForExport failed', e); }
+  return toHide;
+}
+function _restoreUiAfterExport(hiddenList) {
+  try {
+    if (!Array.isArray(hiddenList)) return;
+    hiddenList.forEach(item => { try { item.el.style.display = item.prev || ''; } catch (e) {} });
+  } catch (e) { console.error('_restoreUiAfterExport failed', e); }
+}
+
+function sanitizeForHtml2Canvas() {
+  try {
+    document.querySelectorAll('img').forEach(img => {
+      try { img.crossOrigin = "anonymous"; } catch (e) {}
+      const src = (img.getAttribute('src') || '').trim();
+      if (!src || src === 'about:blank' || src.startsWith('file:///')) {
+        img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org" width="200" height="60"><rect width="100%" height="100%" fill="#ffffff"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#666" font-size="14">Company Logo</text></svg>');
+      }
+    });
+    document.querySelectorAll('*').forEach(el => {
+      try {
+        const bg = getComputedStyle(el).backgroundImage || '';
+        if (bg && bg.includes('file:///')) el.style.backgroundImage = 'none';
+      } catch (e) {}
+    });
+    document.querySelectorAll('.no-export, .action-cell, [data-html2canvas-ignore]').forEach(e => {
+      if (e && !e.dataset.html2canvasHidden) { e.dataset.html2canvasHidden = e.style.display || ''; e.style.display = 'none'; }
+    });
+    document.querySelectorAll('.action-cell button').forEach(btn => {
+      if (btn && !btn.dataset.html2canvasHidden) { btn.dataset.html2canvasHidden = btn.style.display || ''; btn.style.display = 'none'; }
+    });
+  } catch (e) { console.error('sanitizeForHtml2Canvas failed', e); }
+}
+function restoreAfterHtml2Canvas() {
+  try {
+    document.querySelectorAll('[data-html2canvas-hidden], [data-html2canvasHidden], [data-html2canvashidden]').forEach(e => {
+      try {
+        const prev = e.dataset.html2canvasHidden ?? e.getAttribute('data-html2canvas-hidden') ?? e.getAttribute('data-html2canvasHidden');
+        e.style.display = prev || '';
+        try { delete e.dataset.html2canvasHidden; } catch (err) {}
+        try { e.removeAttribute('data-html2canvas-hidden'); } catch (err) {}
+        try { e.removeAttribute('data-html2canvasHidden'); } catch (err) {}
+      } catch (err) {}
+    });
+  } catch (e) { console.error('restoreAfterHtml2Canvas failed', e); }
+}
+
+/* waitForImages helper */
+async function waitForImages(container, timeoutMs = 10000) {
+  try {
+    if (!container) return;
+    const imgs = Array.from(container.querySelectorAll('img'));
+    if (imgs.length === 0) return;
+    await Promise.race([
+      Promise.all(imgs.map(img => {
+        if (img.complete) return Promise.resolve();
+        return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+      })),
+      new Promise(resolve => setTimeout(resolve, timeoutMs))
+    ]);
+  } catch (e) { console.error('waitForImages failed', e); }
+}
+
+/* _exportQuotePDF_impl - core export logic (requires explicit allow flag) */
+async function _exportQuotePDF_impl() {
+  let clone = null;
+  let hidden = [];
+  try {
+    if (!window.__allowExport && !(window.__dev_override_enabled && isDeveloperLoggedIn())) {
+      console.warn('_exportQuotePDF_impl blocked: __allowExport not set');
+      alert('Export blocked: user action required.');
+      return;
+    }
+    const srcEl = findBestQuoteElement();
+    if (!srcEl) { console.error('quote element not found'); alert('Nothing to export'); return; }
+
+    clone = srcEl.cloneNode(true);
+    clone.id = 'quoteWrapper_clone_for_pdf';
+    clone.style.position = 'absolute';
+    clone.style.left = '-9999px';
+    clone.style.top = '0';
+    clone.style.opacity = '1';
+    clone.style.display = 'block';
+    clone.style.visibility = 'visible';
+    clone.style.background = '#ffffff';
+    document.body.appendChild(clone);
+
+    // Remove trial banner text if present
+    clone.querySelectorAll('*').forEach(el => {
+      try { if (el.textContent && el.textContent.includes('TRIAL VERSION UPGRADE TO EXPORT')) el.remove(); } catch (e) {}
+    });
+
+    // Sanitize clone
+    clone.querySelectorAll('img').forEach(img => { try { img.crossOrigin = "anonymous"; } catch (e) {} });
+    sanitizeForHtml2Canvas();
+
+    await waitForImages(clone, 8000);
+
+    hidden = _hideUiForExport();
+
+    // Use html2pdf if available
+    if (typeof html2pdf === 'function' || (window.html2pdf && typeof window.html2pdf === 'function')) {
+      try {
+        const opt = {
+          margin:       10,
+          filename:     (document.getElementById('quoteIdDisplay')?.innerText || getNextQuoteId()) + '.pdf',
+          image:        { type: 'jpeg', quality: 0.95 },
+          html2canvas:  { scale: 2, useCORS: true, allowTaint: false },
+          jsPDF:        { unit: 'pt', format: 'a4', orientation: 'portrait' }
+        };
+        await html2pdf().set(opt).from(clone).save();
+      } catch (err) {
+        console.error('html2pdf export failed', err);
+        alert('Export failed: ' + (err && err.message ? err.message : 'unknown error'));
+      }
+    } else {
+      // Fallback: open print dialog for the clone
+      const w = window.open('', '_blank');
+      if (w) {
+        w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>Quotation</title></head><body>' + clone.outerHTML + '</body></html>');
+        w.document.close();
+        try { w.focus(); w.print(); w.close(); } catch (e) { console.warn('print fallback failed', e); }
+      } else {
+        alert('Unable to open print window for export.');
+      }
+    }
+  } catch (e) {
+    console.error('Export generation failed', e);
+    alert('Export failed. See console for details.');
+  } finally {
+    try { _restoreUiAfterExport(hidden); } catch (e) {}
+    try { restoreAfterHtml2Canvas(); } catch (e) {}
+    try { if (clone) clone.remove(); } catch (e) {}
+    try { delete window.__allowExport; } catch (e) { window.__allowExport = false; }
+  }
+}
+
+/* Public export wrapper (idempotent) */
+function exportQuotePDF() {
+  try { window.__allowExport = true; } catch (e) {}
+  try {
+    if (typeof _exportQuotePDF_impl === 'function') {
+      _exportQuotePDF_impl().catch(err => console.error('exportQuotePDF error', err));
+    } else {
+      console.warn('exportQuotePDF: _exportQuotePDF_impl not defined');
+    }
+  } finally {
+    setTimeout(() => { try { window.__allowExport = false; } catch (e) {} }, 50);
+  }
+}
+window.exportQuotePDF = exportQuotePDF;
+/* Defensive guard: ensure populateQuoteFromSizing exists (no-op fallback) */
+if (typeof window.populateQuoteFromSizing !== 'function') {
+  window.populateQuoteFromSizing = function() {
+    console.warn('populateQuoteFromSizing: fallback no-op called (function not yet defined).');
+    return false;
+  };
+}
+
+/* Defensive populateQuoteFromSizing
+   Copies key sizing results into the quote UI in a safe, non-failing way */
+function populateQuoteFromSizing_impl() {
+  try {
+    // Basic guards
+    const quoteTableBody = document.getElementById('quoteTableBody');
+    const quoteDateEl = document.getElementById('quoteDate');
+    const quoteIdEl = document.getElementById('quoteIdDisplay');
+    const brandNameEl = document.getElementById('brandName');
+    const companyLogoEl = document.getElementById('companyLogo');
+    const currencyMirror = document.getElementById('quoteCurrencyMirror');
+    const currencyInput = document.getElementById('currencySelector');
+
+    // Ensure quote table exists
+    if (!quoteTableBody) return false;
+
+    // Clear existing non-total rows (keep quoteTotalRow)
+    Array.from(quoteTableBody.querySelectorAll('tr')).forEach(tr => {
+      if (tr.id === 'quoteTotalRow') return;
+      tr.remove();
+    });
+
+    // Helper to add a quote row
+    const addQuoteRow = (name, qty, unitPrice) => {
+      try {
+        const totalRow = document.getElementById('quoteTotalRow');
+        const tr = document.createElement('tr');
+        tr.setAttribute('data-quote-index', Date.now() + Math.floor(Math.random() * 1000));
+        tr.innerHTML = `
+          <td><input type="text" class="quote-item-name" name="quote_item_name[]" value="${String(name || '')}" /></td>
+          <td>
+            <label class="visually-hidden">Quantity</label>
+            <input type="number" class="quote-item-qty quoteQty" name="quote_item_qty[]" value="${Number(qty || 1)}" min="0" />
+          </td>
+          <td>
+            <label class="visually-hidden">Unit price</label>
+            <input type="number" class="quote-item-price quotePrice" name="quote_item_price[]" value="${Number(unitPrice || 0)}" min="0" />
+          </td>
+          <td class="quote-item-total quoteRowTotal">${(Number(qty || 1) * Number(unitPrice || 0)).toFixed(2)}</td>
+          <td class="action-cell" data-html2canvas-ignore="true"><button type="button" class="removeRowBtn">Remove</button></td>
+        `;
+        if (totalRow) quoteTableBody.insertBefore(tr, totalRow);
+        else quoteTableBody.appendChild(tr);
+      } catch (e) { console.error('addQuoteRow failed', e); }
+    };
+
+    // Populate header info: date and id
+    try {
+      if (quoteDateEl) quoteDateEl.innerText = (new Date()).toLocaleDateString();
+      if (quoteIdEl) {
+        const existing = quoteIdEl.innerText && quoteIdEl.innerText.trim();
+        quoteIdEl.innerText = existing || ('Q-' + Date.now().toString().slice(-6));
+      }
+    } catch (e) { console.warn('populateQuoteFromSizing: header update failed', e); }
+
+    // Populate brand/logo from system fields if present
+    try {
+      const companyName = (document.getElementById('companyName')?.value || document.getElementById('brandName')?.innerText || '').trim();
+      if (brandNameEl && companyName) brandNameEl.innerText = companyName;
+      const logoUrl = (document.getElementById('companyLogoUrl')?.value || companyLogoEl?.getAttribute('src') || '').trim();
+      if (companyLogoEl && logoUrl) {
+        try { companyLogoEl.src = logoUrl; } catch (e) { /* ignore */ }
+      }
+    } catch (e) { console.warn('populateQuoteFromSizing: branding update failed', e); }
+
+    // Mirror currency
+    try {
+      if (currencyMirror && currencyInput) currencyMirror.value = currencyInput.value || '';
+    } catch (e) { /* ignore */ }
+
+    // Pull sizing results from DOM (defensive fallbacks)
+    const dailyEnergy = Number(document.getElementById('dailyEnergyDisplay')?.innerText || window.totalEnergyValue || 0);
+    const peakLoad = Number(document.getElementById('peakLoadDisplay')?.innerText || window.peakLoadValue || 0);
+    const inverterQty = Number(document.getElementById('inverterQtyResult')?.innerText || 0);
+    const batteryQty = Number(document.getElementById('batteryQty')?.innerText || 0);
+    const panelQty = Number(document.getElementById('panelQty')?.innerText || 0);
+
+    // Create a few sensible default quote lines based on sizing
+    addQuoteRow('Inverter (qty: ' + inverterQty + ')', inverterQty || 1, 0);
+    addQuoteRow('Battery bank (qty: ' + batteryQty + ')', batteryQty || 1, 0);
+    addQuoteRow('Solar panels (qty: ' + panelQty + ')', panelQty || 1, 0);
+    addQuoteRow('Balance of system (cables, mounting, controller)', 1, 0);
+    addQuoteRow('Installation & commissioning', 1, 0);
+
+    // Recalculate totals safely
+    if (typeof calculateQuoteTotals === 'function') {
+      try { calculateQuoteTotals(); } catch (e) { console.error('calculateQuoteTotals failed after populateQuoteFromSizing', e); }
+    } else if (typeof recalcQuoteTotals === 'function') {
+      try { recalcQuoteTotals(); } catch (e) { console.error('recalcQuoteTotals failed after populateQuoteFromSizing', e); }
+    }
+
+    // Ensure quote total display is updated
+    if (typeof updateQuoteTotalDisplay === 'function') {
+      try { updateQuoteTotalDisplay(); } catch (e) { console.error('updateQuoteTotalDisplay failed after populateQuoteFromSizing', e); }
+    }
+
+    return true;
+  } catch (e) {
+    console.error('populateQuoteFromSizing failed', e);
+    return false;
+  }
+}
+
+/* Expose the real implementation and overwrite the no-op guard */
+window.populateQuoteFromSizing = populateQuoteFromSizing_impl;
+
+/* Bind export UI elements idempotently on DOMContentLoaded */
+document.addEventListener('DOMContentLoaded', () => {
+  function bindOnce(el, handler) {
+    if (!el) return;
+    if (el.dataset && el.dataset.listenerAdded) return;
+    el.addEventListener('click', handler);
+    if (el.dataset) el.dataset.listenerAdded = 'true';
+  }
+  bindOnce(document.getElementById('exportPdfBtn'), exportQuotePDF);
+  bindOnce(document.getElementById('filePrintMenuBtn'), exportQuotePDF);
+  bindOnce(document.getElementById('printBtn'), exportQuotePDF);
+  // ensure logo fallback runs after DOM is ready
+// ensure logo fallback runs after DOM is ready
+(function ensureLogoFallback() {
+  try {
+    const img = document.getElementById('companyLogo');
+    if (!img) return;
+    if (!img.getAttribute('src') || img.getAttribute('src').trim() === '') img.src = 'assets/logo.png';
+    try { img.crossOrigin = 'anonymous'; } catch (e) {}
+    img.addEventListener('error', function onLogoError() {
+      try {
+        img.removeEventListener('error', onLogoError);
+        img.src = "data:image/svg+xml;charset=utf-8," +
+          encodeURIComponent("<svg xmlns='http://www.w3.org/2000/svg' width='240' height='60'><rect width='100%' height='100%' fill='#ffffff'/><text x='50%' y='50%' dominant-baseline='middle' text-anchor='middle' fill='#666' font-family='system-ui,Segoe UI,Roboto,Arial' font-size='14'>Company Logo</text></svg>");
+      } catch (e) {}
+    });
+  } catch (e) { console.error('ensureLogoFallback failed', e); }
+})();
+
+
+});
+
+/* Print and share helpers */
+function printQuote() {
+  try {
+    const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (!allowed) { alert("Printing is disabled in trial mode. Please activate a premium license."); return; }
+    const hidden = _hideUiForExport();
+    try { window.print(); } finally { _restoreUiAfterExport(hidden); }
+  } catch (e) { console.error('printQuote failed', e); }
+}
+window.printQuote = printQuote;
+
+function shareQuote() {
+  try {
+    const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (!allowed) { alert("Sharing is a premium feature. Upgrade or log in as developer to enable."); return; }
+    const project = exportProjectJSON();
+    const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(url).then(() => alert('Share link copied to clipboard')).catch(() => alert('Share link ready: ' + url));
+    } else {
+      alert('Share link ready: ' + url);
+    }
+  } catch (e) { console.error('shareQuote failed', e); alert('Unable to prepare share link. See console for details.'); }
+}
+window.shareQuote = shareQuote;
+
+/* Print interception and screenshot mitigation */
+function setupPrintInterception() {
+  try {
+    window.addEventListener('beforeprint', function (e) {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) {
+        try { e.preventDefault(); } catch (err) {}
+        alert("Printing is disabled in trial mode. Please activate a premium license to print.");
+        try { window.focus(); } catch (err) {}
+      }
+    });
+    const nativePrint = window.print;
+    window.print = function () {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) { alert("Printing is disabled in trial mode. Please activate a premium license to print."); return; }
+      return nativePrint.call(window);
+    };
+  } catch (e) { console.error('setupPrintInterception failed', e); }
+}
+setupPrintInterception();
+
+function setupScreenshotMitigation() {
+  try {
+    document.addEventListener('contextmenu', function (e) {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) {
+        const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+        e.preventDefault();
+      }
+    });
+    document.addEventListener('keydown', async function (e) {
+      const allowed = (typeof isPremiumActive === 'function' && isPremiumActive()) || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+      if (!allowed) {
+        if (e.key === 'PrintScreen' || e.keyCode === 44) {
+          try { if (navigator.clipboard && navigator.clipboard.writeText) await navigator.clipboard.writeText(''); } catch (err) {}
+        }
+      }
+    });
+  } catch (e) { console.error('setupScreenshotMitigation failed', e); }
+}
+setupScreenshotMitigation();
+
+function fileNew() {
+  try {
+    if (!confirm('Start a new project? Unsaved changes will be lost.')) return;
+    // Clear load table
+    document.querySelectorAll('#loadTable tbody tr').forEach(r => r.remove());
+    // Clear quote table except total row
+    const qtbody = document.getElementById('quoteTableBody');
+    if (qtbody) Array.from(qtbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+    // Reset branding and counters
+    addRow();
+    calculateTotal();
+    calculateQuoteTotals();
+    updateBranding();
+    try {
+      const idEl = document.getElementById('quoteIdDisplay');
+      const dateEl = document.getElementById('quoteDate');
+      if (idEl) idEl.innerText = getNextQuoteId();
+      if (dateEl) dateEl.innerText = new Date().toLocaleDateString();
+    } catch (e) { console.error('fileNew: set id/date failed', e); }
+    try { adjustProjectCount(1); } catch (e) {}
+  } catch (e) { console.error('fileNew failed', e); alert('Failed to start new project.'); }
+}
+window.fileNew = fileNew;
+
+function fileOpen() {
+  try {
+    const saved = localStorage.getItem('ssp_project');
+    if (!saved) { alert('No saved project found in local storage.'); return; }
+    const project = JSON.parse(saved);
+    if (project.meta?.company) {
+      const companyEl = document.getElementById('companyName');
+      if (companyEl) companyEl.value = project.meta.company;
+    }
+    const tbody = document.getElementById('quoteTableBody');
+    if (tbody) {
+      Array.from(tbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+      (project.items || []).forEach(it => addQuoteRow({ name: it.name, qty: it.qty, price: it.price }));
+      calculateQuoteTotals();
+      alert('Project loaded from local storage.');
+    } else {
+      alert('Quote table not found in the DOM.');
+    }
+  } catch (e) { console.error('fileOpen failed', e); alert('Failed to load project: invalid data.'); }
+}
+window.fileOpen = fileOpen;
+
+function fileSave() {
+  try {
+    const project = exportProjectJSON();
+    const key = 'ssp_project_' + (project.meta?.id || Date.now());
+    localStorage.setItem(key, JSON.stringify(project));
+
+    const raw = localStorage.getItem('ssp_projects_list') || '[]';
+    let list = [];
+    try { list = JSON.parse(raw); } catch (e) { list = []; }
+    const entry = { id: project.meta.id || '', name: project.meta.company || '', savedAt: Date.now(), key };
+    const filtered = list.filter(p => p.id !== entry.id && p.key !== entry.key);
+    filtered.unshift(entry);
+    localStorage.setItem('ssp_projects_list', JSON.stringify(filtered.slice(0, 100)));
+
+    try {
+      const savedList = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]');
+      const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+      const limit = getLicenseLimit();
+      const desired = limit ? Math.min(limit, Math.max(used, savedList.length)) : Math.max(used, savedList.length);
+      localStorage.setItem('ssp_projects_count', String(desired));
+      if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+    } catch (e) { console.error('sync count after save failed', e); }
+
+    alert('Project saved locally.');
+  } catch (e) { console.error('Failed to save project data', e); alert('Failed to save project.'); }
+}
+window.fileSave = fileSave;
+
+async function fileSaveAs() {
+  try {
+    const project = exportProjectJSON();
+    const content = JSON.stringify(project, null, 2);
+    const suggestedName = (project.meta?.id ? `${project.meta.id}.json` : 'ssp_project.json');
+
+    if (window.showSaveFilePicker) {
+      try {
+        const opts = { types: [{ description: 'JSON file', accept: { 'application/json': ['.json'] } }], suggestedName };
+        const handle = await window.showSaveFilePicker(opts);
+        const writable = await handle.createWritable();
+        await writable.write(content);
+        await writable.close();
+        alert('Project saved.');
+        return;
+      } catch (e) { console.warn('showSaveFilePicker failed or cancelled', e); }
+    }
+
+    let filename = prompt('Enter filename to save (include .json)', suggestedName);
+    if (!filename) return;
+    filename = filename.replace(/[\\/:*?"<>|]/g, '') || suggestedName;
+
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    alert('Project saved to downloads as ' + filename);
+  } catch (e) { console.error('fileSaveAs fallback failed', e); alert('Failed to save file: ' + (e && e.message ? e.message : 'unknown error')); }
+}
+window.fileSaveAs = fileSaveAs;
+
+function exportProjectJSON() {
+  try {
+    const items = Array.from(document.querySelectorAll('#quoteTableBody tr'))
+      .filter(r => r.id !== 'quoteTotalRow')
+      .map(r => ({
+        name: r.querySelector('.quote-item-name')?.value || '',
+        qty: Number(r.querySelector('.quote-item-qty')?.value || 0),
+        price: Number(r.querySelector('.quote-item-price')?.value || 0)
+      }));
+
+    const currentId = document.getElementById('quoteIdDisplay')?.innerText || `Quotation_${quoteCounter}`;
+    const totalRaw = Number(document.getElementById('quoteTotal')?.dataset.raw || 0);
+
+    return {
+      meta: {
+        company: document.getElementById('companyName')?.value || '',
+        date: new Date().toISOString(),
+        id: currentId
+      },
+      items,
+      totals: { total: totalRaw }
+    };
+  } catch (e) { console.error('exportProjectJSON failed', e); return { meta: { company: '', date: new Date().toISOString(), id: `Quotation_${quoteCounter}` }, items: [], totals: { total: 0 } }; }
+}
+window.exportProjectJSON = exportProjectJSON;
+
+function exitApp() {
+  try {
+    if (confirm('Exit application?')) {
+      try { window.close(); } catch (e) { alert('Close the tab to exit the app.'); }
+    }
+  } catch (e) { console.error('exitApp failed', e); }
+}
+window.exitApp = exitApp;
+
+/* Projects badge and registry (defensive rendering) */
+(function(){
+  function getUsedCount(){ return Number(localStorage.getItem('ssp_projects_count') || 0); }
+  function getLimit(){ const lic = JSON.parse(localStorage.getItem('ssp_license') || '{}'); return Number(lic.projectsLimit || lic.projectLimit || 0); }
+  const style = document.createElement('style');
+  style.textContent = `.projectsBadge{position:fixed;right:16px;top:72px;z-index:9999;font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial}.projectsBadge .badge{background:#0b5fff;color:#fff;padding:8px 12px;border-radius:8px;box-shadow:0 6px 18px rgba(11,95,255,0.18);display:inline-flex;flex-direction:column;gap:6px;max-width:260px}.projectsBadge .projects-counter{background:transparent;color:#fff;padding:4px 8px;border-radius:6px;font-size:13px;line-height:1;max-width:120px;overflow:hidden;text-overflow:ellipsis;}`;
+  document.head.appendChild(style);
+  if (!document.getElementById('projectsBadge')) {
+    const container = document.createElement('div'); container.id = 'projectsBadge'; container.className = 'projectsBadge';
+    container.innerHTML = `<div class="badge"><strong id="projectsBadgeLabel">Projects: 0 / 0</strong><div id="projectsSlots"></div></div>`;
+    document.body.appendChild(container);
+  }
+  function renderSlots(){
+    const slotsEl = document.getElementById('projectsSlots'); if (!slotsEl) return;
+    slotsEl.innerHTML = '';
+    let saved = [];
+    try { saved = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]'); } catch { saved = []; }
+    const used = getUsedCount(); const limit = getLimit();
+    const license = (typeof getLicense === 'function') ? getLicense() : JSON.parse(localStorage.getItem('ssp_license')||'{}');
+    const tier = (license && (license.tier || license.type)) ? (license.tier || license.type) : 'trial';
+    const dev = (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    const showForStandard = (tier === 'standard') || dev;
+    if (showForStandard) {
+      const counter = document.createElement('div'); counter.className = 'projects-counter'; counter.style.display = 'flex'; counter.style.alignItems = 'center'; counter.style.gap = '8px'; counter.style.fontWeight = '700'; counter.style.whiteSpace = 'nowrap';
+      counter.innerText = `${used} / ${limit || saved.length || 0}`; slotsEl.appendChild(counter);
+    }
+    const labelEl = document.getElementById('projectsBadgeLabel'); if (labelEl) labelEl.innerText = `Projects: ${used} / ${limit || saved.length}`;
+    const legacyCount = document.getElementById('projectsCount'); if (legacyCount) legacyCount.innerText = String(used);
+    const shouldShow = showForStandard && (used > 0 || (limit && limit > 0)); document.getElementById('projectsBadge').style.display = shouldShow ? 'inline-block' : 'none';
+  }
+  window.updateProjectsBadge = renderSlots; renderSlots();
+  window.addEventListener('storage', function(e){ if (['ssp_projects_list','ssp_projects_count','ssp_license'].includes(e.key)) renderSlots(); });
+})();
+
+/* License UI helpers */
+function updateUpgradeButton() {
+  try {
+    const btn = document.getElementById('licenseUpgradeBtn'); if (!btn) return;
+    const lic = getLicense();
+    if (!lic) { btn.innerText = "Activate Premium"; btn.onclick = openSalesFunnel; return; }
+    if (!isLicenseValid()) { btn.innerText = "Renew License"; btn.onclick = openSalesFunnel; return; }
+    if (lic.tier === "standard") { btn.innerText = "Upgrade to Pro"; btn.onclick = openSalesFunnel; return; }
+    btn.innerText = "Manage License"; btn.onclick = openSalesFunnel;
+  } catch (e) { console.error('updateUpgradeButton failed', e); }
+}
+window.updateUpgradeButton = updateUpgradeButton;
+
+function updateLicenseStatus() {
+  try {
+    const lic = getLicense();
+    const statusEl = document.getElementById('licenseStatus');
+    const expiryEl = document.getElementById('licenseExpiry');
+    if (isLicenseValid()) {
+      if (statusEl) statusEl.innerText = "Status: Valid (" + (lic?.tier || 'unknown') + ")";
+      if (expiryEl) expiryEl.innerText = lic?.expiry ? "Expires: " + new Date(lic.expiry).toLocaleDateString() : "Expires: Never";
+    } else {
+      if (statusEl) statusEl.innerText = "Status: INVALID or EXPIRED";
+      if (expiryEl) expiryEl.innerText = "Please activate a license.";
+    }
+  } catch (e) { console.error('updateLicenseStatus failed', e); }
+}
+window.updateLicenseStatus = updateLicenseStatus;
+
+/* Load / delete project helpers */
+function loadProjectByKey(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) { alert('Project not found: ' + key); return; }
+    const project = JSON.parse(raw);
+    if (project.meta?.company) { const companyEl = document.getElementById('companyName'); if (companyEl) companyEl.value = project.meta.company; }
+    const tbody = document.getElementById('quoteTableBody');
+    if (tbody) {
+      Array.from(tbody.querySelectorAll('tr')).forEach(r => { if (r.id !== 'quoteTotalRow') r.remove(); });
+      (project.items || []).forEach(it => addQuoteRow({ name: it.name, qty: it.qty, price: it.price }));
+      calculateQuoteTotals();
+      const idEl = document.getElementById('quoteIdDisplay'); if (idEl) idEl.innerText = project.meta?.id || '';
+      alert('Project loaded: ' + (project.meta?.id || key));
+    } else {
+      alert('Quote table not found in the DOM.');
+    }
+  } catch (e) { console.error('loadProjectByKey failed', e); alert('Failed to load project: ' + (e && e.message ? e.message : 'unknown error')); }
+}
+window.loadProjectByKey = loadProjectByKey;
+
+function deleteSavedProject(key) {
+  try {
+    const rawList = localStorage.getItem('ssp_projects_list') || '[]';
+    const list = JSON.parse(rawList);
+    const idx = list.findIndex(p => p.key === key);
+    if (idx === -1) { alert('Saved project not found in index'); return; }
+    localStorage.removeItem(key);
+    list.splice(idx, 1);
+    localStorage.setItem('ssp_projects_list', JSON.stringify(list));
+    try {
+      const savedList = JSON.parse(localStorage.getItem('ssp_projects_list') || '[]');
+      const limit = getLicenseLimit();
+      const desired = limit ? Math.min(limit, savedList.length) : savedList.length;
+      localStorage.setItem('ssp_projects_count', String(desired));
+    } catch (e) { console.error('recalc count after delete failed', e); }
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    alert('Project deleted.');
+  } catch (e) { console.error('deleteSavedProject failed', e); alert('Failed to delete project: ' + (e && e.message ? e.message : 'unknown error')); }
+}
+window.deleteSavedProject = deleteSavedProject;
+
+/* applyLicenseToUI and mode setters */
+function applyLicenseToUI() {
+  try {
+    const license = (typeof getLicense === 'function') ? getLicense() : null;
+    const isValid = !!license && license.tier && license.expiry && Date.now() < (license.expiry || 0);
+    const banner = document.getElementById('licenseBanner');
+    const watermark = document.getElementById('trialWatermark');
+    const exportBtn = document.getElementById('exportPdfBtn');
+    const printBtn = document.getElementById('printBtn');
+    if (!isValid) {
+      if (banner) banner.style.display = 'block';
+      if (watermark) watermark.style.display = 'block';
+      if (exportBtn) exportBtn.disabled = true;
+      if (printBtn) printBtn.disabled = true;
+    } else {
+      if (banner) banner.style.display = 'none';
+      if (watermark) watermark.style.display = 'none';
+      if (exportBtn) exportBtn.disabled = false;
+      if (printBtn) printBtn.disabled = false;
+    }
+  } catch (e) { console.error('applyLicenseToUI failed', e); }
+}
+window.applyLicenseToUI = applyLicenseToUI;
+
+function setTrialMode() { window.currentTier = 'trial'; if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions(); updateFileMenuState(); }
+function setPremiumMode(tier) { window.currentTier = tier; if (typeof enforceTrialRestrictions === 'function') enforceTrialRestrictions(); updateFileMenuState(); }
+window.setTrialMode = setTrialMode; window.setPremiumMode = setPremiumMode;
+
+/* Project count helpers (defensive) */
+function adjustProjectCount(delta) {
+  try {
+    const current = Number(localStorage.getItem('ssp_projects_count') || 0);
+    const used = Math.max(0, current + Number(delta || 0));
+    localStorage.setItem('ssp_projects_count', String(used));
+    if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    return used;
+  } catch (e) { console.error('adjustProjectCount error', e); return Number(localStorage.getItem('ssp_projects_count') || 0); }
+}
+window.adjustProjectCount = adjustProjectCount;
+
+function getLicenseLimit() {
+  try {
+    const lic = JSON.parse(localStorage.getItem('ssp_license') || '{}');
+    return Number(lic.projectsLimit || lic.projectLimit || 0);
+  } catch (e) { return 0; }
+}
+window.getLicenseLimit = getLicenseLimit;
+
+function canCreateProject() {
+  try {
+    const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+    const limit = getLicenseLimit();
+    return !limit || used < limit;
+  } catch (e) { return true; }
+}
+window.canCreateProject = canCreateProject;
+
+/* Update create button state (defensive selector) */
+function updateCreateButtonState() {
+  try {
+    const used = Number(localStorage.getItem('ssp_projects_count') || 0);
+    const limit = getLicenseLimit();
+    const newBtn = document.querySelector('button.new-project-btn, button#createProjectBtn, button.fileNewBtn');
+    if (newBtn) newBtn.disabled = !!(limit && used >= limit);
+  } catch (e) { console.error('updateCreateButtonState failed', e); }
+}
+window.updateCreateButtonState = updateCreateButtonState;
+
+/* Quote page: Add item button (simple row insertion for legacy UI) */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const addBtn = document.getElementById('addQuoteItemBtn');
+    if (addBtn) {
+      addBtn.addEventListener('click', () => {
+        const tbody = document.getElementById('quoteTableBody');
+        const totalRow = document.getElementById('quoteTotalRow');
+        if (!tbody || !totalRow) return;
+        const newRow = document.createElement('tr');
+
+        newRow.innerHTML = `
+          <td><input type="text" class="quote-item-name" name="quote_item_name[]" placeholder="Item"></td>
+          <td><input type="number" class="quoteQty quote-item-qty" name="quote_item_qty[]" value="1" min="0"></td>
+          <td><input type="number" class="quotePrice quote-item-price" name="quote_item_price[]" value="0" min="0"></td>
+          <td class="quoteRowTotal">0.00</td>
+          <td class="action-cell" data-html2canvas-ignore="true"><button type="button" class="removeQuoteItemBtn">Remove</button></td>
+        `;
+        tbody.insertBefore(newRow, totalRow);
+        // attach listeners for the new row
+        const qty = newRow.querySelector('.quoteQty');
+        const price = newRow.querySelector('.quotePrice');
+        qty?.addEventListener('input', () => { recalcQuoteRow(newRow); recalcQuoteTotals(); });
+        price?.addEventListener('input', () => { recalcQuoteRow(newRow); recalcQuoteTotals(); });
+      });
+    }
+  } catch (e) { console.error('addQuoteItemBtn binding failed', e); }
+});
+
+/* Remove quote item row handler (delegated) */
+document.addEventListener('click', e => {
+  try {
+    if (e.target && e.target.classList && e.target.classList.contains('removeQuoteItemBtn')) {
+      const row = e.target.closest('tr');
+      if (row) { row.remove(); recalcQuoteTotals(); }
+    }
+  } catch (err) { console.error('removeQuoteItemBtn handler failed', err); }
+});
+
+/* Quote row recalculation (legacy table cell total) */
+function recalcQuoteRow(row) {
+  try {
+    if (!row) return;
+    const qty = Number(row.querySelector('.quoteQty')?.value || 0);
+    const price = Number(row.querySelector('.quotePrice')?.value || 0);
+    const totalCell = row.querySelector('.quoteRowTotal') || row.querySelector('.quote-item-total');
+    const total = qty * price;
+    if (totalCell) {
+      if (totalCell.tagName && totalCell.tagName.toLowerCase() === 'input') {
+        totalCell.value = total.toFixed(2);
+        totalCell.dataset.raw = total.toString();
+      } else {
+        totalCell.innerText = total.toFixed(2);
+      }
+    }
+  } catch (e) { console.error('recalcQuoteRow failed', e); }
+}
+window.recalcQuoteRow = recalcQuoteRow;
+
+/* Legacy recalcQuoteTotals for older UI patterns */
+function recalcQuoteTotals() {
+  try {
+    let grandTotal = 0;
+    const tbody = document.getElementById('quoteTableBody');
+    if (!tbody) return;
+    [...tbody.querySelectorAll('tr')].forEach(row => {
+      if (row.id === 'quoteTotalRow') return;
+      const qty = Number(row.querySelector('.quoteQty')?.value || row.querySelector('.quote-item-qty')?.value || 0);
+      const price = Number(row.querySelector('.quotePrice')?.value || row.querySelector('.quote-item-price')?.value || 0);
+      const rowTotal = qty * price;
+      const rowTotalEl = row.querySelector('.quoteRowTotal') || row.querySelector('.quote-item-total');
+      if (rowTotalEl) {
+        if (rowTotalEl.tagName && rowTotalEl.tagName.toLowerCase() === 'input') {
+          rowTotalEl.value = rowTotal.toFixed(2);
+          rowTotalEl.dataset.raw = rowTotal.toString();
+        } else {
+          rowTotalEl.innerText = rowTotal.toFixed(2);
+        }
+      }
+      grandTotal += rowTotal;
+    });
+    const grandInput = document.getElementById('quoteTotal');
+    if (grandInput) { grandInput.value = grandTotal.toFixed(2); grandInput.dataset.raw = grandTotal.toString(); }
+    // keep unified totals in sync
+    if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+  } catch (e) { console.error('recalcQuoteTotals failed', e); }
+}
+window.recalcQuoteTotals = recalcQuoteTotals;
+
+/* Keep legacy and modern inputs in sync: update totals on input */
+document.addEventListener('input', e => {
+  try {
+    const t = e.target;
+    if (!t) return;
+    if (t.closest('#quoteTableBody')) {
+      const row = t.closest('tr');
+      if (row) recalcQuoteRow(row);
+      recalcQuoteTotals();
+      if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+    }
+  } catch (err) { console.error('quote input handler failed', err); }
+});
+
+/* Ensure initial bindings and state on DOM ready */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    // initialize one empty load row if none exist
+    if (!document.querySelectorAll('#loadTableBody tr').length) addRow();
+    // initialize one quote row if none exist (except total row)
+    const qtbody = document.getElementById('quoteTableBody');
+    if (qtbody && qtbody.querySelectorAll('tr').length <= 1) {
+      // leave the total row intact; add a starter row
+      addQuoteRow({ name: '5kVA Hybrid Inverter', qty: 1, price: 500000 });
+    }
+    // initial UI updates
+    calculateTotal();
+    calculateSizing();
+    calculateQuoteTotals();
+    updateBranding();
+    updateCurrencySymbol();
+    applyLicenseToUI();
+    updateCreateButtonState();
+  } catch (e) { console.error('DOMContentLoaded initializers failed', e); }
+});
+
+/* sanitize and restore helpers already defined earlier are used here */
+
+/* Quote population and initialization helpers (continued) */
+function calculateQuoteTotalsIfNeeded() {
+  try {
+    if (typeof calculateQuoteTotals === 'function') calculateQuoteTotals();
+    else if (typeof recalcQuoteTotals === 'function') recalcQuoteTotals();
+  } catch (e) { console.error('calculateQuoteTotalsIfNeeded failed', e); }
+}
+window.calculateQuoteTotalsIfNeeded = calculateQuoteTotalsIfNeeded;
+
+/* Populate quote table from sizing (alias kept) */
+window.populateQuoteFromSizingIfNeeded = populateQuoteFromSizing;
+
+/* Export/print/share bindings (idempotent) */
+function bindExportButtons() {
+  try {
+    const ids = ['exportPdfBtn', 'filePrintMenuBtn', 'printBtn', 'fileShareMenuBtn'];
+    ids.forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      if (el.dataset && el.dataset.listenerAdded) return;
+      el.addEventListener('click', () => {
+        try { window.__allowExport = true; } catch (e) {}
+        try {
+          if (typeof _exportQuotePDF_impl === 'function') _exportQuotePDF_impl();
+          else console.warn('_exportQuotePDF_impl not defined');
+        } finally { try { window.__allowExport = false; } catch (e) {} }
+      });
+      if (el.dataset) el.dataset.listenerAdded = 'true';
+    });
+  } catch (e) { console.error('bindExportButtons failed', e); }
+}
+window.bindExportButtons = bindExportButtons;
+
+/* Simple UI utility: safe text setter */
+function setTextSafe(id, text) {
+  try {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerText = text;
+  } catch (e) { console.error('setTextSafe failed for', id, e); }
+}
+window.setTextSafe = setTextSafe;
+
+/* Small helper to ensure inputs have name attributes (for forms) */
+function ensureQuoteInputsHaveNames() {
+  try {
+    document.querySelectorAll('#quoteTableBody input').forEach((inp, idx) => {
+      if (!inp.name) {
+        const cls = inp.className ? inp.className.replace(/\s+/g, '_') : 'input';
+        inp.name = `${cls}_${idx}`;
+      }
+    });
+  } catch (e) { console.error('ensureQuoteInputsHaveNames failed', e); }
+}
+window.ensureQuoteInputsHaveNames = ensureQuoteInputsHaveNames;
+
+/* Lightweight restore last state (attempt to rehydrate UI) */
+function restoreLastState() {
+  try {
+    // restore company name
+    const projectKey = localStorage.getItem('ssp_last_project_key');
+    if (projectKey) {
+      const raw = localStorage.getItem(projectKey);
+      if (raw) {
+        try {
+          const project = JSON.parse(raw);
+          if (project.meta?.company) {
+            const companyEl = document.getElementById('companyName');
+            if (companyEl) companyEl.value = project.meta.company;
+          }
+        } catch (e) { /* ignore parse errors */ }
+      }
+    }
+    // restore currency
+    const cur = localStorage.getItem('ssp_currency') || '';
+    if (cur && document.getElementById('currencySelector')) document.getElementById('currencySelector').value = cur;
+  } catch (e) { console.error('restoreLastState failed', e); }
+}
+window.restoreLastState = restoreLastState;
+
+/* Small utility: safe element creation for table cells */
+function createCellWithInput(type, className, name, value, attrs = {}) {
+  const td = document.createElement('td');
+  const inp = document.createElement('input');
+  inp.type = type || 'text';
+  if (className) inp.className = className;
+  if (name) inp.name = name;
+  if (typeof value !== 'undefined') inp.value = value;
+  Object.keys(attrs || {}).forEach(k => {
+    try { inp.setAttribute(k, attrs[k]); } catch (e) {}
+  });
+  td.appendChild(inp);
+  return td;
+}
+window.createCellWithInput = createCellWithInput;
+
+/* Small helper to safely query and return integer value from input */
+function safeNumberFromInput(id, fallback = 0) {
+  try {
+    const el = document.getElementById(id);
+    if (!el) return fallback;
+    const n = Number(el.value);
+    return isFinite(n) ? n : fallback;
+  } catch (e) { return fallback; }
+}
+window.safeNumberFromInput = safeNumberFromInput;
+
+/* Ensure export bindings and initial UI state after DOM ready */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    bindExportButtons();
+    ensureQuoteInputsHaveNames();
+    restoreLastState();
+    // Attach simple listeners for currency selector
+    const curSel = document.getElementById('currencySelector');
+    if (curSel) curSel.addEventListener('change', () => { try { localStorage.setItem('ssp_currency', curSel.value); updateCurrencySymbol(); } catch (e) {} });
+  } catch (e) { console.error('DOMContentLoaded post-init failed', e); }
+});
+
+/* Utility: check premium active (simple wrapper) */
+function isPremiumActive() {
+  try {
+    const lic = getLicense();
+    if (!lic) return false;
+    if (!isLicenseValid()) return false;
+    return true;
+  } catch (e) { return false; }
+}
+window.isPremiumActive = isPremiumActive;
+
+/* Update file menu state (defensive) */
+function updateFileMenuState() {
+  try {
+    const filePrintMenuBtn = document.getElementById('filePrintMenuBtn');
+    const fileShareMenuBtn = document.getElementById('fileShareMenuBtn');
+    const enabled = isPremiumActive() || (typeof isDeveloperLoggedIn === 'function' && isDeveloperLoggedIn());
+    if (filePrintMenuBtn) { filePrintMenuBtn.disabled = !enabled; filePrintMenuBtn.title = enabled ? '' : 'Premium required'; }
+    if (fileShareMenuBtn) { fileShareMenuBtn.disabled = !enabled; fileShareMenuBtn.title = enabled ? '' : 'Premium required'; }
+  } catch (e) { console.error('updateFileMenuState failed', e); }
+}
+window.updateFileMenuState = updateFileMenuState;
+
+/* Simple UI updater for projects badge and create button */
+function updateProjectsBadgeAndCreateState() {
+  try {
+    if (typeof updateProjectsBadge === 'function') updateProjectsBadge();
+    if (typeof updateCreateButtonState === 'function') updateCreateButtonState();
+  } catch (e) { console.error('updateProjectsBadgeAndCreateState failed', e); }
+}
+window.updateProjectsBadgeAndCreateState = updateProjectsBadgeAndCreateState;
+
+/* Lightweight attachGlobalListeners if needed */
+function attachGlobalListeners() {
+  try {
+    // keyboard shortcuts (Ctrl/Cmd+S to save)
+    window.addEventListener('keydown', (e) => {
+      try {
+        const meta = e.ctrlKey || e.metaKey;
+        if (meta && e.key && (e.key.toLowerCase() === 's')) {
+          e.preventDefault();
+          if (typeof fileSave === 'function') fileSave();
+        }
+      } catch (err) {}
+    });
+
+    // ensure export buttons bound
+    bindExportButtons();
+
+    // update UI when storage changes
+    window.addEventListener('storage', (e) => {
+      try {
+        if (['ssp_license','ssp_projects_list','ssp_projects_count'].includes(e.key)) {
+          try { applyLicenseToUI(); } catch (err) {}
+          try { updateProjectsBadge(); } catch (err) {}
+        }
+      } catch (err) {}
+    });
+  } catch (e) { console.error('attachGlobalListeners failed', e); }
+}
+window.attachGlobalListeners = attachGlobalListeners;
+
+/* Final sanity function - runs after DOM ready to ensure UI is consistent */
+window._finalSanity = function() {
+  try {
+    // restore last state and ensure initial calculations
+    try { restoreLastState(); } catch (e) {}
+    try { calculateTotal(); } catch (e) {}
+    try { calculateSizing(); } catch (e) {}
+    try { calculateQuoteTotals(); } catch (e) {}
+    try { updateBranding(); } catch (e) {}
+    try { updateCurrencySymbol(); } catch (e) {}
+    try { applyLicenseToUI(); } catch (e) {}
+    try { updateFileMenuState(); } catch (e) {}
+    try { updateProjectsBadgeAndCreateState(); } catch (e) {}
+
+    // bind export handlers idempotently
+    try {
+      const bindExportHandler = (el) => {
+        if (!el) return;
+        if (el.dataset && el.dataset.listenerAdded) return;
+        el.addEventListener('click', () => {
+          try { window.__allowExport = true; } catch (e) {}
+          try {
+            if (typeof _exportQuotePDF_impl === 'function') _exportQuotePDF_impl();
+            else console.warn('_exportQuotePDF_impl not defined');
+          } finally { try { window.__allowExport = false; } catch (e) {} }
+        });
+        if (el.dataset) el.dataset.listenerAdded = 'true';
+      };
+      bindExportHandler(document.getElementById('exportPdfBtn'));
+      bindExportHandler(document.getElementById('filePrintMenuBtn'));
+      bindExportHandler(document.getElementById('printBtn'));
+      bindExportHandler(document.getElementById('fileShareMenuBtn'));
+    } catch (e) { console.warn('Export button binding failed', e); }
+
+    // ensure inputs have names for form compatibility
+    try { ensureQuoteInputsHaveNames(); } catch (e) {}
+
+    // attach global listeners
+    try { attachGlobalListeners(); } catch (e) {}
+
+  } catch (e) { console.warn('final sanity pass failed', e); }
+};
+
+/* Run final sanity after DOM ready */
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', window._finalSanity);
+} else {
+  setTimeout(window._finalSanity, 0);
+}
+
+/* Defensive no-op export (keeps previous behavior if referenced) */
+window._ssp_finalize_noop = function() { return true; };
+
+/* Simple debounce utility */
+function debounce(fn, wait = 200) {
+  let t = null;
+  return function(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => { try { fn.apply(this, args); } catch (e) { console.error('debounce handler error', e); } }, wait);
+  };
+}
+window.debounce = debounce;
+
+/* Throttle utility */
+function throttle(fn, limit = 200) {
+  let inThrottle;
+  return function(...args) {
+    if (!inThrottle) {
+      try { fn.apply(this, args); } catch (e) { console.error('throttle handler error', e); }
+      inThrottle = true;
+      setTimeout(() => inThrottle = false, limit);
+    }
+  };
+}
+window.throttle = throttle;
+
+/* Safe DOM text setter (handles inputs and elements) */
+function setValueSafe(selectorOrEl, value) {
+  try {
+    const el = (typeof selectorOrEl === 'string') ? document.querySelector(selectorOrEl) : selectorOrEl;
+    if (!el) return false;
+    if ('value' in el) { el.value = value; return true; }
+    el.innerText = value;
+    return true;
+  } catch (e) { console.error('setValueSafe failed', e); return false; }
+}
+window.setValueSafe = setValueSafe;
+
+/* Safe DOM getter for numeric values */
+function getNumericValue(selectorOrEl, fallback = 0) {
+  try {
+    const el = (typeof selectorOrEl === 'string') ? document.querySelector(selectorOrEl) : selectorOrEl;
+    if (!el) return fallback;
+    const v = ('value' in el) ? el.value : el.innerText;
+    const n = Number(v);
+    return isFinite(n) ? n : fallback;
+  } catch (e) { return fallback; }
+}
+window.getNumericValue = getNumericValue;
+
+/* Small helper: format date for display */
+function formatDateShort(d) {
+  try {
+    const dt = (d instanceof Date) ? d : new Date(d);
+    if (isNaN(dt.getTime())) return '';
+    return dt.toLocaleDateString();
+  } catch (e) { return ''; }
+}
+window.formatDateShort = formatDateShort;
+
+/* Lightweight logger wrapper (no-op in production if console absent) */
+function logDebug(...args) {
+  try { if (window.__dev_override_enabled) console.debug(...args); } catch (e) {}
+}
+window.logDebug = logDebug;
+
+/* Defensive: ensure key DOM elements exist before heavy operations */
+function ensureCoreDom() {
+  try {
+    if (!document.getElementById('quoteTableBody')) {
+      const tb = document.createElement('tbody'); tb.id = 'quoteTableBody';
+      const table = document.getElementById('quoteTable') || document.querySelector('table');
+      if (table) table.appendChild(tb);
+    }
+    if (!document.getElementById('quoteTotal')) {
+      const inp = document.createElement('input'); inp.type = 'text'; inp.id = 'quoteTotal'; inp.value = '0.00'; document.body.appendChild(inp);
+    }
+  } catch (e) { console.error('ensureCoreDom failed', e); }
+}
+window.ensureCoreDom = ensureCoreDom;
+
+/* Defensive: safe JSON parse */
+function safeJsonParse(str, fallback = null) {
+  try { return JSON.parse(str); } catch (e) { return fallback; }
+}
+window.safeJsonParse = safeJsonParse;
+
+/* Small helper to download a blob (used by fileSaveAs fallback) */
+function downloadBlob(content, filename = 'download.txt', type = 'text/plain') {
+  try {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    return true;
+  } catch (e) { console.error('downloadBlob failed', e); return false; }
+}
+window.downloadBlob = downloadBlob;
+
+/* Small helper: safe element remove */
+function safeRemove(selectorOrEl) {
+  try {
+    const el = (typeof selectorOrEl === 'string') ? document.querySelector(selectorOrEl) : selectorOrEl;
+    if (!el) return false;
+    el.remove();
+    return true;
+  } catch (e) { return false; }
+}
+window.safeRemove = safeRemove;
+
+/* Simple modal helper (non-blocking) */
+function showModalMessage(title, message, opts = {}) {
+  try {
+    const id = 'ssp_modal_message';
+    let modal = document.getElementById(id);
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = id;
+      modal.style.cssText = 'position:fixed;left:50%;top:20%;transform:translateX(-50%);background:#fff;border:1px solid #ccc;padding:16px;z-index:100000;box-shadow:0 8px 24px rgba(0,0,0,0.2);max-width:90%;min-width:280px;font-family:system-ui,Segoe UI,Roboto,Arial';
+      modal.innerHTML = `<strong id="${id}_title"></strong><div id="${id}_body" style="margin-top:8px"></div><div style="margin-top:12px;text-align:right"><button id="${id}_close">Close</button></div>`;
+      document.body.appendChild(modal);
+      document.getElementById(`${id}_close`)?.addEventListener('click', () => { try { modal.remove(); } catch (e) {} });
+    }
+    document.getElementById(`${id}_title`).innerText = title || 'Message';
+    document.getElementById(`${id}_body`).innerText = message || '';
+    if (opts.autoClose && Number(opts.autoClose) > 0) {
+      setTimeout(() => { try { modal.remove(); } catch (e) {} }, Number(opts.autoClose));
+    }
+    return modal;
+  } catch (e) { console.error('showModalMessage failed', e); return null; }
+}
+window.showModalMessage = showModalMessage;
+
+/* Lightweight telemetry stub (no-op in production) */
+function telemetryEvent(name, data = {}) {
+  try {
+    if (!window.__dev_override_enabled) return;
+    console.info('telemetryEvent', name, data);
+  } catch (e) {}
+}
+window.telemetryEvent = telemetryEvent;
+
+/* Safe JSON storage helper */
+function safeSetJson(key, obj) {
+  try {
+    localStorage.setItem(key, JSON.stringify(obj));
+    return true;
+  } catch (e) { console.error('safeSetJson failed', e); return false; }
+}
+function safeGetJson(key, fallback = null) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch (e) { return fallback; }
+}
+window.safeSetJson = safeSetJson;
+window.safeGetJson = safeGetJson;
+
+/* Small helper: ensure a numeric input stays within bounds */
+function clampInputValue(inputEl, min = 0, max = Infinity) {
+  try {
+    if (!inputEl) return;
+    let v = Number(inputEl.value);
+    if (!isFinite(v)) v = min;
+    v = Math.max(min, Math.min(max, v));
+    inputEl.value = v;
+  } catch (e) { console.error('clampInputValue failed', e); }
+}
+window.clampInputValue = clampInputValue;
+
+/* Graceful shutdown helper for single-page app (saves last state) */
+function gracefulShutdown() {
+  try {
+    // Save last used project key if present
+    try {
+      const idEl = document.getElementById('quoteIdDisplay');
+      const key = idEl?.innerText || null;
+      if (key) localStorage.setItem('ssp_last_project_key', key);
+    } catch (e) {}
+    // Save currency
+    try {
+      const cur = document.getElementById('currencySelector')?.value || '';
+      if (cur) localStorage.setItem('ssp_currency', cur);
+    } catch (e) {}
+    // Save license snapshot
+    try {
+      const lic = (typeof getLicense === 'function') ? getLicense() : null;
+      if (lic) safeSetJson('ssp_license', lic);
+    } catch (e) {}
+    telemetryEvent('gracefulShutdown', { ts: Date.now() });
+  } catch (e) { console.error('gracefulShutdown failed', e); }
+}
+window.gracefulShutdown = gracefulShutdown;
+
+/* Bind beforeunload to attempt graceful shutdown */
+try {
+  window.addEventListener('beforeunload', (e) => {
+    try { gracefulShutdown(); } catch (err) {}
+    // allow default unload
+  });
+} catch (e) { console.error('beforeunload binding failed', e); }
+
+/* Small helper: safe call wrapper for optional functions */
+function safeCall(fn, ...args) {
+  try {
+    if (typeof fn === 'function') return fn(...args);
+  } catch (e) { console.error('safeCall error', e); }
+  return undefined;
+}
+window.safeCall = safeCall;
+
+/* Developer utilities (exposed only when dev override enabled) */
+function dumpAppState() {
+  try {
+    if (!window.__dev_override_enabled) { console.warn('dumpAppState: dev override not enabled'); return null; }
+    return {
+      quoteCounter,
+      systemQuantities: window.systemQuantities,
+      totalEnergyValue: window.totalEnergyValue,
+      peakLoadValue: window.peakLoadValue,
+      projectsCount: Number(localStorage.getItem('ssp_projects_count') || 0),
+      license: safeGetJson('ssp_license', null)
+    };
+  } catch (e) { console.error('dumpAppState failed', e); return null; }
+}
+window.dumpAppState = dumpAppState;
+
+/* Small helper: attempt to focus first input on page load for better UX */
+document.addEventListener('DOMContentLoaded', () => {
+  try {
+    const firstInput = document.querySelector('input:not([type=hidden]):not([disabled])');
+    if (firstInput) try { firstInput.focus(); } catch (e) {}
+  } catch (e) {}
+});
+
+/* Ensure core DOM exists and run final sanity once */
+try {
+  ensureCoreDom();
+} catch (e) { console.warn('ensureCoreDom failed', e); }
+
+(function finalGuard() {
+  try {
+    // Expose key functions for debugging and external calls
+    window.calculateTotal = window.calculateTotal || calculateTotal;
+    window.calculateSizing = window.calculateSizing || calculateSizing;
+    window.calculateQuoteTotals = window.calculateQuoteTotals || calculateQuoteTotals;
+    window.addQuoteRow = window.addQuoteRow || addQuoteRow;
+    window.populateQuoteFromSizing = window.populateQuoteFromSizing || populateQuoteFromSizing;
+    window.exportQuotePDF = window.exportQuotePDF || exportQuotePDF;
+    window.fileNew = window.fileNew || fileNew;
+    window.fileOpen = window.fileOpen || fileOpen;
+    window.fileSave = window.fileSave || fileSave;
+    window.fileSaveAs = window.fileSaveAs || fileSaveAs;
+    window.printQuote = window.printQuote || printQuote;
+    window.shareQuote = window.shareQuote || shareQuote;
+    window.applyLicenseToUI = window.applyLicenseToUI || applyLicenseToUI;
+    window.updateFileMenuState = window.updateFileMenuState || updateFileMenuState;
+    window.updateProjectsBadge = window.updateProjectsBadge || updateProjectsBadge;
+    window.restoreLastState = window.restoreLastState || restoreLastState;
+    window._exportQuotePDF_impl = window._exportQuotePDF_impl || _exportQuotePDF_impl;
+
+    // Run a final sanity pass now if DOM is ready
+    const runFinal = () => {
+      try {
+        if (typeof window._finalSanity === 'function') window._finalSanity();
+      } catch (e) { console.warn('Running _finalSanity failed', e); }
+    };
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', runFinal);
+    } else {
+      setTimeout(runFinal, 0);
+    }
+
+    // Small health-check log
+    console.log('Fixed app.js loaded and initialized. Version:', APP_VERSION);
+  } catch (e) {
+    try { console.error('finalGuard failed', e); } catch (err) {}
+  }
+})();
